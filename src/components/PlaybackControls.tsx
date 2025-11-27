@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useCallback } from 'react';
+import { memo, useState, useCallback, useEffect, useRef } from 'react';
 
 interface PlaybackControlsProps {
   isPlaying: boolean;
@@ -8,13 +8,17 @@ interface PlaybackControlsProps {
   ttsLoading: boolean;
   ttsReady: boolean;
   onPlayPause: () => void;
-  onPrevSentence: () => void;
-  onNextSentence: () => void;
+  onSkipBack: () => void;
+  onSkipForward: () => void;
+  onPrevChapter: () => void;
+  onNextChapter: () => void;
   onSpeedChange: (speed: number) => void;
   onSettingsOpen: () => void;
+  canGoPrevChapter: boolean;
+  canGoNextChapter: boolean;
 }
 
-const SPEEDS = [0.75, 1.0, 1.25, 1.5, 2.0];
+const SPEEDS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 
 // Icons
 const PlayIcon = () => (
@@ -29,17 +33,29 @@ const PauseIcon = () => (
   </svg>
 );
 
+const ChapterBackIcon = () => (
+  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M6 6h2v12H6V6zm3.5 6l8.5 6V6l-8.5 6z" />
+  </svg>
+);
+
+const ChapterForwardIcon = () => (
+  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M16 6h2v12h-2V6zM6 18l8.5-6L6 6v12z" />
+  </svg>
+);
+
 const SkipBackIcon = () => (
   <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polygon points="19 20 9 12 19 4 19 20" fill="currentColor" />
-    <line x1="5" y1="19" x2="5" y2="5" />
+    <path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z" fill="currentColor" stroke="none" />
+    <text x="9" y="15" fontSize="7" fontWeight="bold" fill="var(--bg)" stroke="none">15</text>
   </svg>
 );
 
 const SkipForwardIcon = () => (
   <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polygon points="5 4 15 12 5 20 5 4" fill="currentColor" />
-    <line x1="19" y1="5" x2="19" y2="19" />
+    <path d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z" fill="currentColor" stroke="none" />
+    <text x="9" y="15" fontSize="7" fontWeight="bold" fill="var(--bg)" stroke="none">15</text>
   </svg>
 );
 
@@ -63,17 +79,41 @@ export const PlaybackControls = memo(function PlaybackControls({
   ttsLoading,
   ttsReady,
   onPlayPause,
-  onPrevSentence,
-  onNextSentence,
+  onSkipBack,
+  onSkipForward,
+  onPrevChapter,
+  onNextChapter,
   onSpeedChange,
-  onSettingsOpen
+  onSettingsOpen,
+  canGoPrevChapter,
+  canGoNextChapter
 }: PlaybackControlsProps) {
-  // Cycle through speeds on tap
-  const handleSpeedClick = useCallback(() => {
-    const currentIndex = SPEEDS.indexOf(playbackSpeed);
-    const nextIndex = (currentIndex + 1) % SPEEDS.length;
-    onSpeedChange(SPEEDS[nextIndex]);
-  }, [playbackSpeed, onSpeedChange]);
+  const [showSpeedPopup, setShowSpeedPopup] = useState(false);
+  const speedBtnRef = useRef<HTMLButtonElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
+
+  // Handle click outside to close popup
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        showSpeedPopup &&
+        popupRef.current &&
+        speedBtnRef.current &&
+        !popupRef.current.contains(e.target as Node) &&
+        !speedBtnRef.current.contains(e.target as Node)
+      ) {
+        setShowSpeedPopup(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showSpeedPopup]);
+
+  const handleSpeedSelect = useCallback((speed: number) => {
+    onSpeedChange(speed);
+    setShowSpeedPopup(false);
+  }, [onSpeedChange]);
 
   const formatSpeed = (speed: number) => {
     return speed === 1 ? '1x' : `${speed}x`;
@@ -81,22 +121,50 @@ export const PlaybackControls = memo(function PlaybackControls({
 
   return (
     <div className="playback-controls">
-      {/* Speed button */}
-      <button
-        className="playback-btn speed-btn"
-        onClick={handleSpeedClick}
-        title={`Speed: ${formatSpeed(playbackSpeed)}`}
-      >
-        {formatSpeed(playbackSpeed)}
-      </button>
+      {/* Speed button with popup */}
+      <div className="speed-btn-container">
+        <button
+          ref={speedBtnRef}
+          className="playback-btn speed-btn"
+          onClick={() => setShowSpeedPopup(!showSpeedPopup)}
+          title={`Speed: ${formatSpeed(playbackSpeed)}`}
+        >
+          {formatSpeed(playbackSpeed)}
+        </button>
 
-      {/* Skip back */}
+        {/* Speed Popup */}
+        {showSpeedPopup && (
+          <div ref={popupRef} className="speed-popup">
+            {SPEEDS.slice().reverse().map((speed) => (
+              <button
+                key={speed}
+                className={`speed-popup-option ${playbackSpeed === speed ? 'active' : ''}`}
+                onClick={() => handleSpeedSelect(speed)}
+              >
+                {formatSpeed(speed)}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Previous chapter */}
       <button
         className="playback-btn"
-        onClick={onPrevSentence}
-        title="Previous sentence"
+        onClick={onPrevChapter}
+        disabled={!canGoPrevChapter}
+        title="Previous chapter"
       >
-        <SkipBackIcon />
+        <ChapterBackIcon />
+      </button>
+
+      {/* Skip back 15s */}
+      <button
+        className="playback-btn skip-btn"
+        onClick={onSkipBack}
+        title="Skip back 15 seconds"
+      >
+        <span className="skip-label">-15</span>
       </button>
 
       {/* Play/Pause - Primary button */}
@@ -115,13 +183,23 @@ export const PlaybackControls = memo(function PlaybackControls({
         )}
       </button>
 
-      {/* Skip forward */}
+      {/* Skip forward 15s */}
+      <button
+        className="playback-btn skip-btn"
+        onClick={onSkipForward}
+        title="Skip forward 15 seconds"
+      >
+        <span className="skip-label">+15</span>
+      </button>
+
+      {/* Next chapter */}
       <button
         className="playback-btn"
-        onClick={onNextSentence}
-        title="Next sentence"
+        onClick={onNextChapter}
+        disabled={!canGoNextChapter}
+        title="Next chapter"
       >
-        <SkipForwardIcon />
+        <ChapterForwardIcon />
       </button>
 
       {/* Settings */}

@@ -28,7 +28,30 @@ export const Timeline = memo(function Timeline({
   estimatedDuration = 0,
   currentTime = 0
 }: TimelineProps) {
-  const progress = totalSentences > 0 ? ((currentIndex + 1) / totalSentences) * 100 : 0;
+  // Current playback position as percentage
+  const playProgress = totalSentences > 0 ? ((currentIndex + 1) / totalSentences) * 100 : 0;
+
+  // Calculate preload progress - count sentences that are ready, preloading, played, or playing
+  const preloadStats = useMemo(() => {
+    let preloadedCount = 0;
+    let playedCount = 0;
+
+    sentenceIds.forEach((id) => {
+      const state = sentenceStates[id];
+      if (state === 'ready' || state === 'preloading' || state === 'playing') {
+        preloadedCount++;
+      }
+      if (state === 'played') {
+        playedCount++;
+        preloadedCount++; // played also counts as preloaded
+      }
+    });
+
+    const preloadPercentage = totalSentences > 0 ? (preloadedCount / totalSentences) * 100 : 0;
+    const playedPercentage = totalSentences > 0 ? (playedCount / totalSentences) * 100 : 0;
+
+    return { preloadedCount, playedCount, preloadPercentage, playedPercentage };
+  }, [sentenceStates, sentenceIds, totalSentences]);
 
   const remainingTime = estimatedDuration - currentTime;
 
@@ -108,10 +131,19 @@ export const Timeline = memo(function Timeline({
         aria-valuenow={currentIndex}
         tabIndex={0}
       >
+        {/* Preload progress (subtle, shows % processed) */}
+        <div
+          className="timeline-preload"
+          style={{ width: `${preloadStats.preloadPercentage}%` }}
+        />
+
+        {/* Played progress (purple, shows current position) */}
         <div
           className="timeline-progress"
-          style={{ width: `${progress}%` }}
+          style={{ width: `${playProgress}%` }}
         />
+
+        {/* Sentence markers */}
         <div className="timeline-markers">
           {visibleMarkers.map(({ id, index, position, state }) => (
             <button

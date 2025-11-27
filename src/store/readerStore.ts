@@ -25,7 +25,8 @@ interface ReaderState {
 
   // Playback state
   isPlaying: boolean;
-  playbackSpeed: number;
+  speechRate: number;        // TTS generation speed (how fast the model speaks)
+  audioPlaybackRate: number; // Audio playback speed (how fast audio plays)
   volume: number;
 
   // TTS state
@@ -56,7 +57,8 @@ interface ReaderState {
   setShowSettings: (show: boolean) => void;
 
   setIsPlaying: (playing: boolean) => void;
-  setPlaybackSpeed: (speed: number) => void;
+  setSpeechRate: (rate: number) => void;
+  setAudioPlaybackRate: (rate: number) => void;
   setVolume: (volume: number) => void;
 
   setTTSReady: (ready: boolean) => void;
@@ -90,7 +92,8 @@ export const useReaderStore = create<ReaderState>()(
       showSettings: false,
 
       isPlaying: false,
-      playbackSpeed: 1.0,
+      speechRate: 1.05,        // Default TTS generation speed
+      audioPlaybackRate: 1.0,  // Default audio playback speed
       volume: 1.0,
 
       ttsReady: false,
@@ -203,7 +206,8 @@ export const useReaderStore = create<ReaderState>()(
       setShowSettings: (showSettings) => set({ showSettings }),
 
       setIsPlaying: (isPlaying) => set({ isPlaying }),
-      setPlaybackSpeed: (playbackSpeed) => set({ playbackSpeed }),
+      setSpeechRate: (speechRate) => set({ speechRate }),
+      setAudioPlaybackRate: (audioPlaybackRate) => set({ audioPlaybackRate }),
       setVolume: (volume) => set({ volume }),
 
       setTTSReady: (ttsReady) => set({ ttsReady }),
@@ -244,7 +248,8 @@ export const useReaderStore = create<ReaderState>()(
       partialize: (state) => ({
         theme: state.theme,
         fontSize: state.fontSize,
-        playbackSpeed: state.playbackSpeed,
+        speechRate: state.speechRate,
+        audioPlaybackRate: state.audioPlaybackRate,
         volume: state.volume,
         currentVoice: state.currentVoice
       })

@@ -4,21 +4,6 @@ import { memo, useMemo } from 'react';
 import { Sentence } from '@/lib/epub';
 import { SentenceAudioState } from '@/store/readerStore';
 
-// Bookmark icon component
-const BookmarkIcon = () => (
-  <svg
-    className="w-4 h-4"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-  >
-    <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
-  </svg>
-);
-
 interface SentenceSpanProps {
   sentence: Sentence;
   index: number;
@@ -105,12 +90,6 @@ export const SentenceSpan = memo(function SentenceSpan({
           </span>
         );
       })}
-      {/* Bookmark icon - only visible on hover/active */}
-      {isHighlighted && (
-        <span className="bookmark-icon inline-block ml-2 align-middle opacity-60 hover:opacity-100 transition-opacity">
-          <BookmarkIcon />
-        </span>
-      )}
       {/* Add space after sentence for natural reading flow */}
       {' '}
     </span>

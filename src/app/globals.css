@@ -164,14 +164,12 @@ body {
   50% { background-color: rgba(201, 162, 39, 0.12); }
 }
 
-/* Active sentence - subtle underline instead of heavy background */
+/* Active sentence - use box-shadow for underline (doesn't affect layout) */
 .sentence.sentence-playing,
 .sentence.active {
   background-color: transparent;
-  box-shadow: none;
-  border-bottom: 2px solid var(--highlight-word);
-  padding-bottom: 0.15em;
-  margin-bottom: -0.15em;
+  /* Use inset box-shadow for underline - no layout shift */
+  box-shadow: inset 0 -2px 0 var(--highlight-word);
 }
 
 /* Played sentences - clearly grayed out */
@@ -204,33 +202,28 @@ body {
   color: var(--text-spoken);
 }
 
-/* Currently speaking word - strong highlight */
+/* Currently speaking word - use outline instead of padding (no layout shift) */
 .sentence.active .word.speaking {
   background-color: var(--highlight-word);
   color: var(--text);
-  box-shadow: 0 2px 8px var(--color-gold-glow);
   border-radius: 3px;
-  padding: 0.05em 0.15em;
-  margin: 0 -0.1em;
+  /* Use outline instead of padding/margin - doesn't affect layout */
+  outline: 2px solid var(--highlight-word);
+  outline-offset: 1px;
 }
 
-/* Word highlight animation */
+/* Word highlight animation - no transform to avoid layout shift */
 @keyframes wordHighlight {
   0% {
     background-color: transparent;
-    transform: scale(1);
-  }
-  50% {
-    transform: scale(1.02);
   }
   100% {
     background-color: var(--highlight-word);
-    transform: scale(1);
   }
 }
 
 .word.speaking {
-  animation: wordHighlight 0.2s ease-out forwards;
+  animation: wordHighlight 0.15s ease-out forwards;
 }
 
 /* Page Texture Overlay */
@@ -523,6 +516,17 @@ body {
   cursor: pointer;
 }
 
+.timeline-preload {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  background: var(--text-muted);
+  opacity: 0.3;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
 .timeline-progress {
   position: absolute;
   left: 0;
@@ -642,6 +646,77 @@ body {
 
 .speed-btn:hover {
   color: var(--text);
+}
+
+/* Speed Popup Container */
+.speed-btn-container {
+  position: relative;
+}
+
+/* Speed Popup */
+.speed-popup {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 60px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: 4px 0;
+  z-index: 100;
+  animation: popupSlideIn 0.15s ease-out;
+}
+
+[data-theme="dark"] .speed-popup {
+  background: var(--bg-elevated);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+@keyframes popupSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+.speed-popup-option {
+  display: block;
+  width: 100%;
+  padding: 8px 16px;
+  text-align: center;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.speed-popup-option:hover {
+  background: var(--highlight-sentence);
+  color: var(--text);
+}
+
+.speed-popup-option.active {
+  color: var(--accent, var(--color-accent-purple));
+  font-weight: 600;
+}
+
+/* Skip Buttons */
+.skip-btn {
+  border-radius: 50%;
+}
+
+.skip-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Settings Bottom Sheet */
@@ -897,12 +972,12 @@ button, a, input[type="range"] {
 
 /* Dark theme sentence highlighting adjustments */
 [data-theme="dark"] .sentence.active {
-  border-bottom-color: var(--color-accent-purple);
+  box-shadow: inset 0 -2px 0 var(--color-accent-purple);
 }
 
 [data-theme="dark"] .sentence.active .word.speaking {
   background-color: rgba(168, 85, 247, 0.4);
-  box-shadow: 0 2px 8px var(--color-accent-purple-glow);
+  outline-color: rgba(168, 85, 247, 0.6);
 }
 
 /* Smoother scrolling behavior */
