@@ -3,9 +3,15 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { ParsedBook } from '@/lib/epub';
-import { useReaderStore } from '@/store/readerStore';
+import { useNavigationStore } from '@/store/navigationStore';
+import { usePlaybackStore } from '@/store/playbackStore';
+import { useUIStore } from '@/store/uiStore';
+import { useTTSStore } from '@/store/ttsStore';
+import { useSentenceStateStore } from '@/store/sentenceStateStore';
 import { useLibraryStore } from '@/store/libraryStore';
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
+import { useVisibilityPause } from '@/hooks/useVisibilityPause';
+import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { VirtualizedSentenceList } from '@/components/VirtualizedSentenceList';
 import { Timeline } from '@/components/Timeline';
 import { PlaybackControls } from '@/components/PlaybackControls';
@@ -40,35 +46,41 @@ export default function ReaderPage() {
   const [book, setBook] = useState<ParsedBook | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const {
-    currentBook,
-    setCurrentBook,
-    currentChapterIndex,
-    currentSentenceIndex,
-    setSentence,
-    nextSentence,
-    prevSentence,
-    theme,
-    fontSize,
-    isPlaying,
-    setIsPlaying,
-    highlightedSentenceId,
-    highlightedWordIndex,
-    setHighlight,
-    sentenceStates,
-    ttsReady,
-    ttsLoading,
-    currentVoice,
-    setCurrentVoice,
-    volume,
-    setVolume,
-    speechRate,
-    setSpeechRate,
-    audioPlaybackRate,
-    setAudioPlaybackRate,
-    showSettings,
-    setShowSettings
-  } = useReaderStore();
+  // Navigation store
+  const currentBook = useNavigationStore(state => state.currentBook);
+  const setCurrentBook = useNavigationStore(state => state.setCurrentBook);
+  const currentChapterIndex = useNavigationStore(state => state.currentChapterIndex);
+  const currentSentenceIndex = useNavigationStore(state => state.currentSentenceIndex);
+  const nextSentence = useNavigationStore(state => state.nextSentence);
+  const prevSentence = useNavigationStore(state => state.prevSentence);
+
+  // Playback store
+  const isPlaying = usePlaybackStore(state => state.isPlaying);
+  const setIsPlaying = usePlaybackStore(state => state.setIsPlaying);
+  const volume = usePlaybackStore(state => state.volume);
+  const setVolume = usePlaybackStore(state => state.setVolume);
+  const speechRate = usePlaybackStore(state => state.speechRate);
+  const setSpeechRate = usePlaybackStore(state => state.setSpeechRate);
+  const audioPlaybackRate = usePlaybackStore(state => state.audioPlaybackRate);
+  const setAudioPlaybackRate = usePlaybackStore(state => state.setAudioPlaybackRate);
+
+  // UI store
+  const theme = useUIStore(state => state.theme);
+  const fontSize = useUIStore(state => state.fontSize);
+  const showSettings = useUIStore(state => state.showSettings);
+  const setShowSettings = useUIStore(state => state.setShowSettings);
+
+  // TTS store
+  const ttsReady = useTTSStore(state => state.ttsReady);
+  const ttsLoading = useTTSStore(state => state.ttsLoading);
+  const currentVoice = useTTSStore(state => state.currentVoice);
+  const setCurrentVoice = useTTSStore(state => state.setCurrentVoice);
+
+  // Sentence state store
+  const sentenceStates = useSentenceStateStore(state => state.sentenceStates);
+  const highlightedSentenceId = useSentenceStateStore(state => state.highlightedSentenceId);
+  const highlightedWordIndex = useSentenceStateStore(state => state.highlightedWordIndex);
+  const setHighlight = useSentenceStateStore(state => state.setHighlight);
 
   const { updateLastRead } = useLibraryStore();
 
@@ -81,6 +93,9 @@ export default function ReaderPage() {
     handleChapterChange,
     skipToSentence
   } = useAudioPlayback();
+
+  // Auto-pause when tab is hidden
+  useVisibilityPause();
 
   // Load book from sessionStorage or library
   useEffect(() => {
@@ -218,6 +233,12 @@ export default function ReaderPage() {
   // Chapter navigation availability
   const canGoPrevChapter = book ? currentChapterIndex > 0 : false;
   const canGoNextChapter = book ? currentChapterIndex < book.chapters.length - 1 : false;
+
+  // Keyboard shortcuts
+  useKeyboardShortcuts({
+    onSkipBack: handleSkipBack,
+    onSkipForward: handleSkipForward
+  });
 
   if (loading) {
     return (

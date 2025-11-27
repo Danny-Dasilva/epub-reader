@@ -2,7 +2,7 @@
 
 import { useCallback } from 'react';
 import { Sentence } from '@/lib/epub';
-import { SentenceStateMap } from '@/store/readerStore';
+import { SentenceStateMap } from '@/store/sentenceStateStore';
 import { SentenceSpan } from './SentenceSpan';
 
 interface VirtualizedSentenceListProps {

@@ -2,7 +2,7 @@
 
 import { memo, useMemo } from 'react';
 import { Sentence } from '@/lib/epub';
-import { SentenceAudioState } from '@/store/readerStore';
+import { SentenceAudioState } from '@/store/sentenceStateStore';
 
 interface SentenceSpanProps {
   sentence: Sentence;

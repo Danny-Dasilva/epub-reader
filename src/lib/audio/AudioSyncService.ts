@@ -9,7 +9,7 @@ import { TTSWorkerManager, getSharedTTSWorkerManager } from '../tts/TTSWorkerMan
 import { PreloadQueueManager, PreloadStateCallback } from './PreloadQueueManager';
 import { AudioPlayer, getSharedAudioPlayer } from './AudioPlayer';
 import { SentenceAudio, PlaybackEvent, PlaybackEventHandler } from './types';
-import { SentenceAudioState } from '@/store/readerStore';
+import { SentenceAudioState } from '@/store/sentenceStateStore';
 
 export interface AudioSyncConfig {
   ttsModelPath: string;
