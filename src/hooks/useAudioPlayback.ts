@@ -221,7 +221,8 @@ export function useAudioPlayback() {
     };
   }, [setHighlight, nextSentence, setIsPlaying]);
 
-  // Handle play state changes - OPTIMISTIC: state already updated, just trigger action
+  // Handle play state changes - passive effect that handles pause/resume and auto-advance
+  // Manual skips are handled by skipToSentence directly to avoid race conditions
   useEffect(() => {
     const service = serviceRef.current;
     if (!service || !service.isReady()) return;
@@ -233,18 +234,24 @@ export function useAudioPlayback() {
     if (!sentence) return;
 
     if (isPlaying) {
-      // Check if we should resume or start fresh
-      if (isPausedRef.current && sessionRef.current.sentenceId === sentence.id) {
-        // Resume from where we left off
+      // Skip if sessionRef already has this sentence (skipToSentence already started it)
+      // This prevents duplicate playback when clicking a sentence triggers both
+      // skipToSentence AND this effect via state changes
+      if (sessionRef.current.sentenceId === sentence.id) {
+        // Already playing/preparing this sentence, just ensure preloading
+        service.preloadSentences(chapter.sentences, currentSentenceIndex + 1);
+        return;
+      }
+
+      if (isPausedRef.current) {
+        // Resume from pause (same sentence, just paused)
         service.resume();
         isPausedRef.current = false;
       } else {
-        // New sentence - cancel existing operations and start fresh
+        // New sentence (auto-advance from sentenceEnd or initial play) - start fresh
         const session = newSession(sentence.id);
 
-        // Play with abort signal for cancellation support
         service.playSentence(sentence, session.abortController.signal).catch(error => {
-          // Ignore abort errors - they're expected during cancellation
           if (error.name !== 'AbortError') {
             console.error('Failed to play sentence:', error);
             setIsPlaying(false);
@@ -261,7 +268,7 @@ export function useAudioPlayback() {
         isPausedRef.current = true;
       }
     }
-  }, [isPlaying, currentSentenceIndex, currentChapterIndex, newSession]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isPlaying, currentSentenceIndex, currentChapterIndex, newSession, getCurrentChapter, setIsPlaying]);
 
   // Handle volume changes
   useEffect(() => {
@@ -351,43 +358,71 @@ export function useAudioPlayback() {
     useReaderStore.getState().setChapter(chapterIndex);
   }, [cancelAllOperations]);
 
-  // Play a specific sentence
-  const playSentence = useCallback(async (sentence: Sentence) => {
+  // Play a specific sentence - updates state, play effect handles actual playback
+  const playSentence = useCallback((sentence: Sentence) => {
     const service = serviceRef.current;
     if (!service || !service.isReady()) return;
 
-    // Create new session, cancelling any existing
-    const session = newSession(sentence.id);
-    isPausedRef.current = false;
-
-    try {
-      await service.playSentence(sentence, session.abortController.signal);
-      setIsPlaying(true);
-    } catch (error) {
-      if ((error as Error).name !== 'AbortError') {
-        console.error('Failed to play sentence:', error);
+    // Find sentence index and update store state
+    const chapter = getCurrentChapter();
+    if (chapter) {
+      const index = chapter.sentences.findIndex(s => s.id === sentence.id);
+      if (index >= 0) {
+        useReaderStore.getState().setSentence(index);
       }
     }
-  }, [setIsPlaying, newSession]);
 
-  // Skip to sentence and play
+    // Update highlight and ensure playing
+    setHighlight(sentence.id, null);
+    isPausedRef.current = false;
+    setIsPlaying(true);
+
+    // Play effect will handle actual playback
+  }, [getCurrentChapter, setHighlight, setIsPlaying]);
+
+  // Skip to sentence - SINGLE entry point for sentence changes
+  // Stops current audio, updates state, and starts new playback directly
   const skipToSentence = useCallback((index: number) => {
     const chapter = getCurrentChapter();
     if (!chapter || index < 0 || index >= chapter.sentences.length) return;
 
     const sentence = chapter.sentences[index];
-    setHighlight(sentence.id, null);
+    const service = serviceRef.current;
 
-    // Reset pause state since we're starting a new sentence
+    // STOP current playback first to ensure clean state
+    if (service && service.isPlaying()) {
+      service.stop();
+    }
+
+    // Cancel existing session and create new one BEFORE state updates
+    const session = newSession(sentence.id);
     isPausedRef.current = false;
 
-    // Update sentence index in store
+    // Update state atomically
+    setHighlight(sentence.id, null);
     useReaderStore.getState().setSentence(index);
 
-    if (isPlaying) {
-      playSentence(sentence);
+    // Start playback if service is ready
+    if (service && service.isReady()) {
+      service.playSentence(sentence, session.abortController.signal).catch(error => {
+        if (error.name !== 'AbortError') {
+          console.error('Failed to play sentence:', error);
+          setIsPlaying(false);
+        }
+      });
+
+      // Ensure playing state
+      if (!useReaderStore.getState().isPlaying) {
+        setIsPlaying(true);
+      }
+
+      // Preload upcoming sentences
+      service.preloadSentences(chapter.sentences, index + 1);
+    } else {
+      // No service ready, just ensure playing state for when it loads
+      setIsPlaying(true);
     }
-  }, [getCurrentChapter, setHighlight, isPlaying, playSentence]);
+  }, [getCurrentChapter, setHighlight, setIsPlaying, newSession]);
 
   return {
     initProgress,
