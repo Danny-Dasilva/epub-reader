@@ -9,6 +9,7 @@ import { TTSWorkerManager, TTSSynthesisResult } from '../tts/TTSWorkerManager';
 import { SentenceAudio } from './types';
 import { WordTimestamp } from '../asr/types';
 import { SentenceAudioState } from '@/store/readerStore';
+import { float32ToWav, createAudioBlobUrl } from '../tts/audioUtils';
 
 export interface PreloadConfig {
   preloadCount: number;      // Max number of sentences to preload ahead (default: 4)
@@ -213,7 +214,11 @@ export class PreloadQueueManager {
     sentence: Sentence,
     result: TTSSynthesisResult
   ): Promise<SentenceAudio> {
-    // Create AudioBuffer
+    // Create blob URL for HTMLAudioElement playback with preservesPitch
+    const wavBuffer = float32ToWav(result.wav, result.sampleRate);
+    const blobUrl = createAudioBlobUrl(wavBuffer);
+
+    // Create AudioBuffer (kept for potential fallback)
     const audioBuffer = await this.createAudioBuffer(result.wav, result.sampleRate);
 
     // Estimate word timings (simple even distribution)
@@ -223,6 +228,7 @@ export class PreloadQueueManager {
       sentenceId: sentence.id,
       text: sentence.text,
       audioBuffer,
+      blobUrl,
       wordTimestamps,
       duration: result.duration
     };

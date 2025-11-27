@@ -8,6 +8,7 @@ export interface SentenceAudio {
   sentenceId: string;
   text: string;
   audioBuffer: AudioBuffer;
+  blobUrl: string;  // WAV blob URL for HTMLAudioElement playback with preservesPitch
   wordTimestamps: WordTimestamp[];
   duration: number;
 }
