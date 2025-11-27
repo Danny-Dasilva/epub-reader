@@ -1,7 +1,7 @@
 'use client';
 
 import { memo, useCallback, useMemo } from 'react';
-import { SentenceAudioState } from '@/store/readerStore';
+import { SentenceAudioState } from '@/store/sentenceStateStore';
 
 interface TimelineProps {
   totalSentences: number;

@@ -2,13 +2,18 @@
  * Preload Queue Manager
  * Manages sentence audio preloading with priority, cancellation, and state tracking.
  * Integrates with the TTS Worker for non-blocking synthesis.
+ *
+ * Features:
+ * - LRU cache eviction to bound memory usage
+ * - Blob URL tracking and cleanup to prevent memory leaks
+ * - Character-weighted word timing estimation
  */
 
 import { Sentence } from '../epub/types';
 import { TTSWorkerManager, TTSSynthesisResult } from '../tts/TTSWorkerManager';
 import { SentenceAudio } from './types';
 import { WordTimestamp } from '../asr/types';
-import { SentenceAudioState } from '@/store/readerStore';
+import { SentenceAudioState } from '@/store/sentenceStateStore';
 import { float32ToWav, createAudioBlobUrl } from '../tts/audioUtils';
 
 export interface PreloadConfig {
@@ -16,6 +21,7 @@ export interface PreloadConfig {
   preloadCharLimit: number;  // Target character count limit (default: 800)
   speed: number;             // Playback speed
   totalSteps: number;        // TTS denoising steps
+  maxCacheSize: number;      // Max number of cached sentences (default: 20)
   onItemComplete?: (sentenceId: string, cacheSize: number) => void;  // Callback when item finishes preloading
 }
 
@@ -40,6 +46,12 @@ export class PreloadQueueManager {
   private audioContext: AudioContext | null = null;
   private sampleRate: number = 44100;
 
+  // Blob URL tracking for memory leak prevention
+  private blobUrls: Map<string, string> = new Map();
+
+  // LRU cache tracking - most recently used at end
+  private accessOrder: string[] = [];
+
   constructor(ttsManager: TTSWorkerManager, config: Partial<PreloadConfig> = {}) {
     this.ttsManager = ttsManager;
     this.config = {
@@ -47,6 +59,7 @@ export class PreloadQueueManager {
       preloadCharLimit: 800,
       speed: 1.0,
       totalSteps: 5,
+      maxCacheSize: 20,
       ...config
     };
   }
@@ -67,7 +80,7 @@ export class PreloadQueueManager {
 
     // Clear cache if speed changed (audio needs regeneration)
     if (speedChanged) {
-      this.cache.clear();
+      this.clearCache();
     }
   }
 
@@ -181,11 +194,15 @@ export class PreloadQueueManager {
         request.abortController.signal
       );
 
+      // Evict old entries if cache is full
+      this.evictIfNeeded();
+
       // Create SentenceAudio
       const audio = await this.createSentenceAudio(request.sentence, result);
 
-      // Cache the result
+      // Cache the result and track access
       this.cache.set(request.sentence.id, audio);
+      this.touchAccess(request.sentence.id);
 
       // Update state to ready
       this.stateCallback?.(request.sentence.id, 'ready');
@@ -208,6 +225,61 @@ export class PreloadQueueManager {
   }
 
   /**
+   * Evict oldest entries if cache exceeds max size
+   */
+  private evictIfNeeded(): void {
+    while (this.cache.size >= this.config.maxCacheSize && this.accessOrder.length > 0) {
+      const oldest = this.accessOrder.shift();
+      if (oldest) {
+        this.revokeBlob(oldest);
+        this.cache.delete(oldest);
+      }
+    }
+  }
+
+  /**
+   * Track access for LRU eviction - move to end (most recently used)
+   */
+  private touchAccess(sentenceId: string): void {
+    const index = this.accessOrder.indexOf(sentenceId);
+    if (index > -1) {
+      this.accessOrder.splice(index, 1);
+    }
+    this.accessOrder.push(sentenceId);
+  }
+
+  /**
+   * Create and track a blob URL (for memory leak prevention)
+   */
+  private createAndTrackBlobUrl(sentenceId: string, wavBuffer: ArrayBuffer): string {
+    // Revoke old URL if exists
+    this.revokeBlob(sentenceId);
+
+    const url = createAudioBlobUrl(wavBuffer);
+    this.blobUrls.set(sentenceId, url);
+    return url;
+  }
+
+  /**
+   * Revoke a tracked blob URL
+   */
+  private revokeBlob(sentenceId: string): void {
+    const url = this.blobUrls.get(sentenceId);
+    if (url) {
+      URL.revokeObjectURL(url);
+      this.blobUrls.delete(sentenceId);
+    }
+  }
+
+  /**
+   * Revoke all tracked blob URLs
+   */
+  private revokeAllBlobs(): void {
+    this.blobUrls.forEach(url => URL.revokeObjectURL(url));
+    this.blobUrls.clear();
+  }
+
+  /**
    * Create a SentenceAudio object from synthesis result
    */
   private async createSentenceAudio(
@@ -216,12 +288,12 @@ export class PreloadQueueManager {
   ): Promise<SentenceAudio> {
     // Create blob URL for HTMLAudioElement playback with preservesPitch
     const wavBuffer = float32ToWav(result.wav, result.sampleRate);
-    const blobUrl = createAudioBlobUrl(wavBuffer);
+    const blobUrl = this.createAndTrackBlobUrl(sentence.id, wavBuffer);
 
     // Create AudioBuffer (kept for potential fallback)
     const audioBuffer = await this.createAudioBuffer(result.wav, result.sampleRate);
 
-    // Estimate word timings (simple even distribution)
+    // Estimate word timings with character-weighted distribution
     const wordTimestamps = this.estimateWordTimings(sentence.text, result.duration);
 
     return {
@@ -257,27 +329,50 @@ export class PreloadQueueManager {
   }
 
   /**
-   * Estimate word timings by dividing duration evenly
+   * Estimate word timings using character-weighted distribution
+   * Longer words get proportionally more time than shorter words
    */
   private estimateWordTimings(text: string, duration: number): WordTimestamp[] {
     const words = text.split(/\s+/).filter(w => w.length > 0);
     if (words.length === 0) return [];
 
-    const avgWordDuration = duration / words.length;
+    // Weight by character count for more natural timing
+    const totalChars = words.reduce((sum, w) => sum + w.length, 0);
 
-    return words.map((word, i) => ({
-      text: word,
-      start: i * avgWordDuration,
-      end: (i + 1) * avgWordDuration,
-      confidence: 1.0
-    }));
+    if (totalChars === 0) {
+      // Fallback to even distribution
+      const avgDuration = duration / words.length;
+      return words.map((word, i) => ({
+        text: word,
+        start: i * avgDuration,
+        end: (i + 1) * avgDuration,
+        confidence: 0.5
+      }));
+    }
+
+    let currentTime = 0;
+    return words.map(word => {
+      const wordDuration = (word.length / totalChars) * duration;
+      const timestamp = {
+        text: word,
+        start: currentTime,
+        end: currentTime + wordDuration,
+        confidence: 0.7  // Lower confidence since estimated
+      };
+      currentTime += wordDuration;
+      return timestamp;
+    });
   }
 
   /**
-   * Get cached audio for a sentence
+   * Get cached audio for a sentence (updates LRU tracking)
    */
   getAudio(sentenceId: string): SentenceAudio | undefined {
-    return this.cache.get(sentenceId);
+    const audio = this.cache.get(sentenceId);
+    if (audio) {
+      this.touchAccess(sentenceId);
+    }
+    return audio;
   }
 
   /**
@@ -295,8 +390,8 @@ export class PreloadQueueManager {
     sentence: Sentence,
     signal?: AbortSignal
   ): Promise<SentenceAudio> {
-    // Check cache first
-    const cached = this.cache.get(sentence.id);
+    // Check cache first (and update LRU)
+    const cached = this.getAudio(sentence.id);
     if (cached) return cached;
 
     // Update state
@@ -312,8 +407,12 @@ export class PreloadQueueManager {
         signal
       );
 
+      // Evict if needed
+      this.evictIfNeeded();
+
       const audio = await this.createSentenceAudio(sentence, result);
       this.cache.set(sentence.id, audio);
+      this.touchAccess(sentence.id);
       this.stateCallback?.(sentence.id, 'ready');
 
       return audio;
@@ -418,10 +517,12 @@ export class PreloadQueueManager {
   }
 
   /**
-   * Clear all cached audio
+   * Clear all cached audio and revoke blob URLs
    */
   clearCache(): void {
+    this.revokeAllBlobs();
     this.cache.clear();
+    this.accessOrder = [];
   }
 
   /**
@@ -430,7 +531,12 @@ export class PreloadQueueManager {
   clearCacheWhere(predicate: (sentenceId: string) => boolean): void {
     for (const [id] of this.cache) {
       if (predicate(id)) {
+        this.revokeBlob(id);
         this.cache.delete(id);
+        const index = this.accessOrder.indexOf(id);
+        if (index > -1) {
+          this.accessOrder.splice(index, 1);
+        }
       }
     }
   }
@@ -438,9 +544,10 @@ export class PreloadQueueManager {
   /**
    * Get cache statistics
    */
-  getCacheStats(): { size: number; sentenceIds: string[] } {
+  getCacheStats(): { size: number; maxSize: number; sentenceIds: string[] } {
     return {
       size: this.cache.size,
+      maxSize: this.config.maxCacheSize,
       sentenceIds: Array.from(this.cache.keys())
     };
   }
@@ -450,7 +557,9 @@ export class PreloadQueueManager {
    */
   dispose(): void {
     this.cancelSession();
+    this.revokeAllBlobs();
     this.cache.clear();
+    this.accessOrder = [];
     this.stateCallback = null;
   }
 }
