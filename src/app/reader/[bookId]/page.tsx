@@ -62,8 +62,10 @@ export default function ReaderPage() {
     setCurrentVoice,
     volume,
     setVolume,
-    playbackSpeed,
-    setPlaybackSpeed,
+    speechRate,
+    setSpeechRate,
+    audioPlaybackRate,
+    setAudioPlaybackRate,
     showSettings,
     setShowSettings
   } = useReaderStore();
@@ -189,6 +191,34 @@ export default function ReaderPage() {
     }
   }, [book, currentChapterIndex, handleChapterChange]);
 
+  // Handle previous chapter
+  const handlePrevChapter = useCallback(() => {
+    if (book && currentChapterIndex > 0) {
+      handleChapterChange(currentChapterIndex - 1);
+    }
+  }, [book, currentChapterIndex, handleChapterChange]);
+
+  // Handle skip back/forward by ~15 seconds (estimate based on sentences)
+  // Assuming ~3-4 seconds per sentence on average at 1x speed
+  const SENTENCES_PER_15_SECONDS = 4;
+
+  const handleSkipBack = useCallback(() => {
+    if (!currentChapter) return;
+    const newIndex = Math.max(0, currentSentenceIndex - SENTENCES_PER_15_SECONDS);
+    skipToSentence(newIndex);
+  }, [currentChapter, currentSentenceIndex, skipToSentence]);
+
+  const handleSkipForward = useCallback(() => {
+    if (!currentChapter) return;
+    const maxIndex = currentChapter.sentences.length - 1;
+    const newIndex = Math.min(maxIndex, currentSentenceIndex + SENTENCES_PER_15_SECONDS);
+    skipToSentence(newIndex);
+  }, [currentChapter, currentSentenceIndex, skipToSentence]);
+
+  // Chapter navigation availability
+  const canGoPrevChapter = book ? currentChapterIndex > 0 : false;
+  const canGoNextChapter = book ? currentChapterIndex < book.chapters.length - 1 : false;
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center" data-theme="dark" style={{ background: 'var(--bg)' }}>
@@ -311,14 +341,18 @@ export default function ReaderPage() {
           {/* Playback Controls */}
           <PlaybackControls
             isPlaying={isPlaying}
-            playbackSpeed={playbackSpeed}
+            playbackSpeed={audioPlaybackRate}
             ttsLoading={ttsLoading}
             ttsReady={ttsReady}
             onPlayPause={handlePlayPause}
-            onPrevSentence={handlePrevSentence}
-            onNextSentence={handleNextSentence}
-            onSpeedChange={setPlaybackSpeed}
+            onSkipBack={handleSkipBack}
+            onSkipForward={handleSkipForward}
+            onPrevChapter={handlePrevChapter}
+            onNextChapter={handleNextChapter}
+            onSpeedChange={setAudioPlaybackRate}
             onSettingsOpen={() => setShowSettings(true)}
+            canGoPrevChapter={canGoPrevChapter}
+            canGoNextChapter={canGoNextChapter}
           />
 
           {/* TTS Loading Status */}
@@ -349,6 +383,10 @@ export default function ReaderPage() {
         onVoiceChange={setCurrentVoice}
         volume={volume}
         onVolumeChange={setVolume}
+        speechRate={speechRate}
+        onSpeechRateChange={setSpeechRate}
+        audioPlaybackRate={audioPlaybackRate}
+        onAudioPlaybackRateChange={setAudioPlaybackRate}
         chapters={book.chapters}
         currentChapterIndex={currentChapterIndex}
         onChapterSelect={handleChapterSelect}

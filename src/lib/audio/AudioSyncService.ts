@@ -203,12 +203,26 @@ export class AudioSyncService {
   }
 
   /**
-   * Set playback speed (clears cache as audio needs regeneration)
+   * Set TTS speech rate (clears cache as audio needs regeneration)
+   */
+  setSpeechRate(rate: number): void {
+    this.config.speed = rate;
+    this.preloadManager.setConfig({ speed: rate });
+    this.preloadManager.clearCache();
+  }
+
+  /**
+   * Set audio playback rate (does NOT clear cache - just speeds up playback)
+   */
+  setAudioPlaybackRate(rate: number): void {
+    this.player.setPlaybackRate(rate);
+  }
+
+  /**
+   * @deprecated Use setSpeechRate instead
    */
   setSpeed(speed: number): void {
-    this.config.speed = speed;
-    this.preloadManager.setConfig({ speed });
-    this.preloadManager.clearCache();
+    this.setSpeechRate(speed);
   }
 
   /**

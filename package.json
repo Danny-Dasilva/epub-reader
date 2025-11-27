@@ -11,6 +11,7 @@
     "download-models": "bash scripts/download-models.sh"
   },
   "dependencies": {
+    "@soundtouchjs/audio-worklet": "^0.2.1",
     "dexie": "^4.2.1",
     "epubjs": "^0.3.93",
     "lucide-react": "^0.555.0",

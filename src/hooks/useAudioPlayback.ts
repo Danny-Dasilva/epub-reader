@@ -51,7 +51,8 @@ export function useAudioPlayback() {
     currentSentenceIndex,
     isPlaying,
     volume,
-    playbackSpeed,
+    speechRate,
+    audioPlaybackRate,
     currentVoice,
     setIsPlaying,
     setTTSReady,
@@ -113,7 +114,7 @@ export function useAudioPlayback() {
           ttsModelPath: TTS_MODEL_PATH,
           voiceStylePath: voicePath,
           preloadCount: 4,
-          speed: playbackSpeed,
+          speed: speechRate,
           totalSteps: 5
         });
 
@@ -234,19 +235,18 @@ export function useAudioPlayback() {
     if (!sentence) return;
 
     if (isPlaying) {
-      // Skip if sessionRef already has this sentence (skipToSentence already started it)
-      // This prevents duplicate playback when clicking a sentence triggers both
-      // skipToSentence AND this effect via state changes
-      if (sessionRef.current.sentenceId === sentence.id) {
-        // Already playing/preparing this sentence, just ensure preloading
-        service.preloadSentences(chapter.sentences, currentSentenceIndex + 1);
-        return;
-      }
-
+      // Check for resume FIRST - isPausedRef takes priority over session check
+      // because pause doesn't clear the session ID
       if (isPausedRef.current) {
         // Resume from pause (same sentence, just paused)
         service.resume();
         isPausedRef.current = false;
+      } else if (sessionRef.current.sentenceId === sentence.id) {
+        // Already playing/preparing this sentence (skipToSentence already started it)
+        // This prevents duplicate playback when clicking a sentence triggers both
+        // skipToSentence AND this effect via state changes
+        service.preloadSentences(chapter.sentences, currentSentenceIndex + 1);
+        return;
       } else {
         // New sentence (auto-advance from sentenceEnd or initial play) - start fresh
         const session = newSession(sentence.id);
@@ -277,18 +277,26 @@ export function useAudioPlayback() {
     }
   }, [volume]);
 
-  // Handle speed changes
+  // Handle speech rate changes (TTS generation speed - clears cache)
   useEffect(() => {
     const service = serviceRef.current;
     if (!service) return;
 
-    // Cancel current operations when speed changes
+    // Cancel current operations when speech rate changes
     cancelSession();
-    service.setSpeed(playbackSpeed);
+    service.setSpeechRate(speechRate);
 
     // Clear sentence states since audio needs regeneration
     clearSentenceStates();
-  }, [playbackSpeed, cancelSession, clearSentenceStates]);
+  }, [speechRate, cancelSession, clearSentenceStates]);
+
+  // Handle audio playback rate changes (just speeds up playback, no cache clear)
+  useEffect(() => {
+    const service = serviceRef.current;
+    if (!service) return;
+
+    service.setAudioPlaybackRate(audioPlaybackRate);
+  }, [audioPlaybackRate]);
 
   // Handle voice changes
   useEffect(() => {

@@ -4,11 +4,17 @@
 
 import { WordTimestamp } from '../asr/types';
 import { PlaybackEvent, PlaybackEventHandler, SentenceAudio } from './types';
+import { TimeStretch } from './TimeStretch';
+
+// Latency introduced by time-stretching processing (~100ms for WSOLA algorithm)
+const TIME_STRETCH_LATENCY = 0.1;
 
 export class AudioPlayer {
   private audioContext: AudioContext | null = null;
   private currentSource: AudioBufferSourceNode | null = null;
   private gainNode: GainNode | null = null;
+  private timeStretch: TimeStretch = new TimeStretch();
+  private timeStretchEnabled: boolean = false;
   private startTime: number = 0;
   private pausedAt: number = 0;
   private isPlaying: boolean = false;
@@ -16,6 +22,7 @@ export class AudioPlayer {
   private animationFrameId: number | null = null;
   private eventHandlers: Set<PlaybackEventHandler> = new Set();
   private lastWordIndex: number = -1;
+  private playbackRate: number = 1.0;
 
   constructor() {
     // AudioContext will be created on first user interaction
@@ -26,6 +33,9 @@ export class AudioPlayer {
       this.audioContext = new AudioContext();
       this.gainNode = this.audioContext.createGain();
       this.gainNode.connect(this.audioContext.destination);
+
+      // Initialize time-stretching (async, will be ready for next playback)
+      this.initTimeStretch();
     }
 
     // Resume if suspended (browser autoplay policy)
@@ -34,6 +44,19 @@ export class AudioPlayer {
     }
 
     return this.audioContext;
+  }
+
+  private async initTimeStretch(): Promise<void> {
+    if (!this.audioContext || !this.gainNode) return;
+
+    const success = await this.timeStretch.initialize(this.audioContext);
+    if (success) {
+      // Connect time-stretch node to gain node
+      this.timeStretch.connect(this.gainNode);
+      this.timeStretchEnabled = true;
+      // Apply current playback rate as tempo
+      this.timeStretch.setTempo(this.playbackRate);
+    }
   }
 
   addEventListener(handler: PlaybackEventHandler): () => void {
@@ -57,6 +80,25 @@ export class AudioPlayer {
     }
   }
 
+  setPlaybackRate(rate: number): void {
+    this.playbackRate = Math.max(0.5, Math.min(2.0, rate));
+
+    if (this.timeStretchEnabled) {
+      // Use SoundTouch tempo for proper time-stretching (no pitch change)
+      // Keep native playbackRate at 1.0 - let SoundTouch handle the speed
+      this.timeStretch.setTempo(this.playbackRate);
+    } else {
+      // Fallback: use native playbackRate (will have pitch shift)
+      if (this.currentSource) {
+        this.currentSource.playbackRate.value = this.playbackRate;
+      }
+    }
+  }
+
+  getPlaybackRate(): number {
+    return this.playbackRate;
+  }
+
   async playSentence(sentence: SentenceAudio): Promise<void> {
     const ctx = this.ensureAudioContext();
 
@@ -69,7 +111,17 @@ export class AudioPlayer {
     // Create buffer source
     this.currentSource = ctx.createBufferSource();
     this.currentSource.buffer = sentence.audioBuffer;
-    this.currentSource.connect(this.gainNode!);
+
+    // Connect through time-stretch if available, otherwise direct to gain
+    if (this.timeStretchEnabled && this.timeStretch.getNode()) {
+      // Time-stretch handles speed - keep native playbackRate at 1.0
+      this.currentSource.playbackRate.value = 1.0;
+      this.currentSource.connect(this.timeStretch.getNode()!);
+    } else {
+      // Fallback: use native playbackRate (will have pitch shift)
+      this.currentSource.playbackRate.value = this.playbackRate;
+      this.currentSource.connect(this.gainNode!);
+    }
 
     // Handle playback end
     this.currentSource.onended = () => {
@@ -117,7 +169,17 @@ export class AudioPlayer {
 
     this.currentSource = ctx.createBufferSource();
     this.currentSource.buffer = this.currentSentence.audioBuffer;
-    this.currentSource.connect(this.gainNode!);
+
+    // Connect through time-stretch if available, otherwise direct to gain
+    if (this.timeStretchEnabled && this.timeStretch.getNode()) {
+      // Time-stretch handles speed - keep native playbackRate at 1.0
+      this.currentSource.playbackRate.value = 1.0;
+      this.currentSource.connect(this.timeStretch.getNode()!);
+    } else {
+      // Fallback: use native playbackRate (will have pitch shift)
+      this.currentSource.playbackRate.value = this.playbackRate;
+      this.currentSource.connect(this.gainNode!);
+    }
 
     this.currentSource.onended = () => {
       if (this.isPlaying) {
@@ -152,6 +214,10 @@ export class AudioPlayer {
     this.stopWordTracking();
 
     if (this.currentSource) {
+      // Clear onended handler BEFORE stopping to prevent unwanted sentenceEnd events
+      // when we intentionally stop (pause, seek, skip). The handler should only fire
+      // when audio naturally completes.
+      this.currentSource.onended = null;
       try {
         this.currentSource.stop();
       } catch (e) {
@@ -168,8 +234,25 @@ export class AudioPlayer {
     const track = () => {
       if (!this.isPlaying || !this.audioContext || !this.currentSentence) return;
 
-      const currentTime = this.audioContext.currentTime - this.startTime;
-      const wordIndex = this.findCurrentWordIndex(currentTime);
+      // Calculate current playback position
+      let elapsedTime = this.audioContext.currentTime - this.startTime;
+
+      // Adjust for time-stretching:
+      // - At tempo 2.0: we consume 2 seconds of audio per real second
+      // - Word timestamps are based on original audio duration
+      // - So multiply elapsed time by tempo to get position in original audio
+      let audioPosition: number;
+      if (this.timeStretchEnabled) {
+        // Account for processing latency
+        elapsedTime = Math.max(0, elapsedTime - TIME_STRETCH_LATENCY);
+        // Scale by tempo to match original audio timestamps
+        audioPosition = elapsedTime * this.timeStretch.getTempo();
+      } else {
+        // Fallback: using native playbackRate, time maps directly
+        audioPosition = elapsedTime * this.playbackRate;
+      }
+
+      const wordIndex = this.findCurrentWordIndex(audioPosition);
 
       if (wordIndex !== this.lastWordIndex) {
         this.lastWordIndex = wordIndex;
@@ -177,7 +260,7 @@ export class AudioPlayer {
           type: 'wordChange',
           sentenceId: this.currentSentence.sentenceId,
           wordIndex: wordIndex >= 0 ? wordIndex : undefined,
-          currentTime
+          currentTime: audioPosition
         });
       }
 
@@ -248,6 +331,8 @@ export class AudioPlayer {
 
   dispose(): void {
     this.stop();
+    this.timeStretch.dispose();
+    this.timeStretchEnabled = false;
     if (this.audioContext) {
       this.audioContext.close();
       this.audioContext = null;

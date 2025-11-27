@@ -12,6 +12,11 @@ interface SettingsSheetProps {
   // Volume
   volume: number;
   onVolumeChange: (volume: number) => void;
+  // Speed controls
+  speechRate: number;
+  onSpeechRateChange: (rate: number) => void;
+  audioPlaybackRate: number;
+  onAudioPlaybackRateChange: (rate: number) => void;
   // Chapters
   chapters: Chapter[];
   currentChapterIndex: number;
@@ -35,6 +40,9 @@ const VolumeIcon = ({ muted }: { muted?: boolean }) => (
   </svg>
 );
 
+const SPEECH_RATE_PRESETS = [0.9, 1.0, 1.05, 1.1, 1.2] as const;
+const PLAYBACK_RATE_PRESETS = [0.75, 1.0, 1.25, 1.5, 2.0] as const;
+
 export const SettingsSheet = memo(function SettingsSheet({
   isOpen,
   onClose,
@@ -42,6 +50,10 @@ export const SettingsSheet = memo(function SettingsSheet({
   onVoiceChange,
   volume,
   onVolumeChange,
+  speechRate,
+  onSpeechRateChange,
+  audioPlaybackRate,
+  onAudioPlaybackRateChange,
   chapters,
   currentChapterIndex,
   onChapterSelect
@@ -133,6 +145,40 @@ export const SettingsSheet = memo(function SettingsSheet({
               <span className="text-sm text-[var(--text-muted)] min-w-[3rem] text-right">
                 {Math.round(volume * 100)}%
               </span>
+            </div>
+          </div>
+
+          {/* TTS Generation Speed */}
+          <div className="settings-section">
+            <h3 className="settings-section-title">TTS Speed</h3>
+            <p className="text-xs text-[var(--text-muted)] mb-2">How fast the model generates speech (clears cache)</p>
+            <div className="settings-row">
+              {SPEECH_RATE_PRESETS.map((rate) => (
+                <button
+                  key={rate}
+                  className={`settings-pill ${speechRate === rate ? 'active' : ''}`}
+                  onClick={() => onSpeechRateChange(rate)}
+                >
+                  {rate}x
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Audio Playback Speed */}
+          <div className="settings-section">
+            <h3 className="settings-section-title">Playback Speed</h3>
+            <p className="text-xs text-[var(--text-muted)] mb-2">How fast audio plays back (instant)</p>
+            <div className="settings-row">
+              {PLAYBACK_RATE_PRESETS.map((rate) => (
+                <button
+                  key={rate}
+                  className={`settings-pill ${audioPlaybackRate === rate ? 'active' : ''}`}
+                  onClick={() => onAudioPlaybackRateChange(rate)}
+                >
+                  {rate}x
+                </button>
+              ))}
             </div>
           </div>
 
