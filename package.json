@@ -6,12 +6,19 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "postinstall": "bash scripts/download-models.sh",
+    "download-models": "bash scripts/download-models.sh"
   },
   "dependencies": {
+    "dexie": "^4.2.1",
+    "epubjs": "^0.3.93",
     "next": "16.0.4",
+    "onnxruntime-web": "^1.23.2",
+    "parakeet.js": "^0.0.3",
     "react": "19.2.0",
-    "react-dom": "19.2.0"
+    "react-dom": "19.2.0",
+    "zustand": "^5.0.8"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
