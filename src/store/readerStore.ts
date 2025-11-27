@@ -21,6 +21,7 @@ interface ReaderState {
   theme: Theme;
   fontSize: number;
   showToc: boolean;
+  showSettings: boolean;
 
   // Playback state
   isPlaying: boolean;
@@ -52,6 +53,7 @@ interface ReaderState {
   setTheme: (theme: Theme) => void;
   setFontSize: (size: number) => void;
   setShowToc: (show: boolean) => void;
+  setShowSettings: (show: boolean) => void;
 
   setIsPlaying: (playing: boolean) => void;
   setPlaybackSpeed: (speed: number) => void;
@@ -82,9 +84,10 @@ export const useReaderStore = create<ReaderState>()(
       currentChapterIndex: 0,
       currentSentenceIndex: 0,
 
-      theme: 'sepia',
+      theme: 'dark',
       fontSize: 20,
       showToc: false,
+      showSettings: false,
 
       isPlaying: false,
       playbackSpeed: 1.0,
@@ -197,6 +200,7 @@ export const useReaderStore = create<ReaderState>()(
       setTheme: (theme) => set({ theme }),
       setFontSize: (fontSize) => set({ fontSize }),
       setShowToc: (showToc) => set({ showToc }),
+      setShowSettings: (showSettings) => set({ showSettings }),
 
       setIsPlaying: (isPlaying) => set({ isPlaying }),
       setPlaybackSpeed: (playbackSpeed) => set({ playbackSpeed }),

@@ -118,8 +118,9 @@ export function VirtualizedSentenceList({
     return (
       <div ref={containerRef} className="space-y-1 leading-relaxed">
         {sentences.map((sentence, index) => {
-          const isActive = highlightedSentenceId === sentence.id ||
-            (isPlaying && index === currentIndex);
+          // Use ONLY highlightedSentenceId to determine active state
+          // This prevents multiple sentences being highlighted when state is out of sync
+          const isActive = highlightedSentenceId === sentence.id;
           const state = sentenceStates[sentence.id];
 
           return (
@@ -151,8 +152,9 @@ export function VirtualizedSentenceList({
 
       {/* Visible sentences */}
       {visibleSentences.map(({ sentence, index }) => {
-        const isActive = highlightedSentenceId === sentence.id ||
-          (isPlaying && index === currentIndex);
+        // Use ONLY highlightedSentenceId to determine active state
+        // This prevents multiple sentences being highlighted when state is out of sync
+        const isActive = highlightedSentenceId === sentence.id;
         const state = sentenceStates[sentence.id];
 
         return (
