@@ -39,3 +39,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Large model files (download via scripts/download-models.sh)
+/public/models/
+/public/onnx/
+/public/voice_styles/

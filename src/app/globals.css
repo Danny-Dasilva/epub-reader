@@ -1,26 +1,471 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/* ============================================
+   NARRATOR — Editorial Literary Aesthetic
+   Warm, sophisticated, immersive reading
+   ============================================ */
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  /* Typography */
+  --font-serif: var(--font-serif), 'Crimson Pro', Georgia, serif;
+  --font-sans: var(--font-sans), 'DM Sans', system-ui, sans-serif;
+
+  /* Warm Literary Color Palette */
+  --color-ink: #1a1612;
+  --color-ink-light: #2d2621;
+  --color-ink-muted: #5c534a;
+
+  --color-paper: #faf6f0;
+  --color-paper-warm: #f5ede3;
+  --color-paper-dark: #ebe3d7;
+
+  --color-sepia: #d4c4a8;
+  --color-sepia-dark: #8b7355;
+
+  --color-gold: #c9a227;
+  --color-gold-light: #e8d48a;
+  --color-gold-glow: rgba(201, 162, 39, 0.3);
+
+  --color-highlight: #fff3c4;
+  --color-highlight-word: #fde68a;
+
+  /* Dark theme */
+  --color-night-bg: #1a1612;
+  --color-night-surface: #252019;
+  --color-night-text: #e8e0d4;
+  --color-night-muted: #9c9080;
+
+  /* Spacing */
+  --spacing-page: clamp(1rem, 5vw, 4rem);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* Base Styles */
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  min-height: 100vh;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  line-height: 1.6;
+  transition: background-color 0.4s ease, color 0.4s ease;
+}
+
+/* Theme Classes */
+[data-theme="sepia"] {
+  --bg: var(--color-paper-warm);
+  --bg-surface: var(--color-paper);
+  --text: var(--color-ink);
+  --text-muted: var(--color-ink-muted);
+  --text-spoken: #8b7355;  /* Sepia-toned gray for spoken words */
+  --border: var(--color-sepia);
+  --highlight-sentence: var(--color-highlight);
+  --highlight-word: var(--color-gold-light);
+}
+
+[data-theme="light"] {
+  --bg: #ffffff;
+  --bg-surface: #f8f8f8;
+  --text: #1a1a1a;
+  --text-muted: #666666;
+  --text-spoken: #9ca3af;  /* Neutral gray for spoken words */
+  --border: #e0e0e0;
+  --highlight-sentence: #e8f4fd;
+  --highlight-word: #bae6fd;
+}
+
+[data-theme="dark"] {
+  --bg: var(--color-night-bg);
+  --bg-surface: var(--color-night-surface);
+  --text: var(--color-night-text);
+  --text-muted: var(--color-night-muted);
+  --text-spoken: #6b7280;  /* Dark mode gray for spoken words */
+  --border: #3d342c;
+  --highlight-sentence: rgba(201, 162, 39, 0.15);
+  --highlight-word: rgba(201, 162, 39, 0.4);
+}
+
+/* Reading Text Styles */
+.prose-reading {
+  font-family: var(--font-serif);
+  font-size: 1.25rem;
+  line-height: 1.9;
+  letter-spacing: 0.01em;
+  color: var(--text);
+  max-width: 65ch;
+}
+
+.prose-reading p {
+  margin-bottom: 1.5em;
+  text-indent: 1.5em;
+}
+
+.prose-reading p:first-of-type {
+  text-indent: 0;
+}
+
+/* Sentence Highlighting */
+.sentence {
+  padding: 0.1em 0;
+  border-radius: 2px;
+  transition: background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Preloaded/Ready sentence - subtle gray background */
+.sentence.sentence-ready {
+  background-color: rgba(0, 0, 0, 0.03);
+  border-radius: 3px;
+}
+
+[data-theme="dark"] .sentence.sentence-ready {
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+[data-theme="sepia"] .sentence.sentence-ready {
+  background-color: rgba(139, 115, 85, 0.06);
+}
+
+/* Currently preloading - subtle pulse animation */
+.sentence.sentence-preloading {
+  background-color: rgba(201, 162, 39, 0.04);
+  animation: preloadPulse 1.8s ease-in-out infinite;
+}
+
+@keyframes preloadPulse {
+  0%, 100% { background-color: rgba(201, 162, 39, 0.04); }
+  50% { background-color: rgba(201, 162, 39, 0.08); }
+}
+
+[data-theme="dark"] .sentence.sentence-preloading {
+  background-color: rgba(201, 162, 39, 0.06);
+  animation: preloadPulseDark 1.8s ease-in-out infinite;
+}
+
+@keyframes preloadPulseDark {
+  0%, 100% { background-color: rgba(201, 162, 39, 0.06); }
+  50% { background-color: rgba(201, 162, 39, 0.12); }
+}
+
+/* Active sentence - subtle underline instead of heavy background */
+.sentence.sentence-playing,
+.sentence.active {
+  background-color: transparent;
+  box-shadow: none;
+  border-bottom: 2px solid var(--highlight-word);
+  padding-bottom: 0.15em;
+  margin-bottom: -0.15em;
+}
+
+/* Played sentences - clearly grayed out */
+.sentence.sentence-played {
+  color: var(--text-spoken);
+  opacity: 0.75;
+}
+
+.sentence.sentence-played .word {
+  color: inherit;
+}
+
+/* Error state - subtle red tint */
+.sentence.sentence-error {
+  background-color: rgba(239, 68, 68, 0.08);
+}
+
+[data-theme="dark"] .sentence.sentence-error {
+  background-color: rgba(239, 68, 68, 0.12);
+}
+
+/* Word base transitions for smooth karaoke effect */
+.word {
+  transition: color 0.2s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+  display: inline;
+}
+
+/* Spoken words - fade to gray */
+.sentence.active .word.spoken {
+  color: var(--text-spoken);
+}
+
+/* Currently speaking word - strong highlight */
+.sentence.active .word.speaking {
+  background-color: var(--highlight-word);
+  color: var(--text);
+  box-shadow: 0 2px 8px var(--color-gold-glow);
+  border-radius: 3px;
+  padding: 0.05em 0.15em;
+  margin: 0 -0.1em;
+}
+
+/* Word highlight animation */
+@keyframes wordHighlight {
+  0% {
+    background-color: transparent;
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.02);
+  }
+  100% {
+    background-color: var(--highlight-word);
+    transform: scale(1);
+  }
+}
+
+.word.speaking {
+  animation: wordHighlight 0.2s ease-out forwards;
+}
+
+/* Page Texture Overlay */
+.paper-texture {
+  position: relative;
+}
+
+.paper-texture::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  opacity: 0.03;
+  pointer-events: none;
+  mix-blend-mode: multiply;
+}
+
+/* Book Cover Cards */
+.book-card {
+  position: relative;
+  aspect-ratio: 2/3;
+  background: linear-gradient(135deg, var(--color-paper-dark) 0%, var(--color-sepia) 100%);
+  border-radius: 4px;
+  overflow: hidden;
+  box-shadow:
+    0 2px 4px rgba(26, 22, 18, 0.1),
+    0 8px 24px rgba(26, 22, 18, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.book-card:hover {
+  transform: translateY(-4px) rotate(-1deg);
+  box-shadow:
+    0 4px 8px rgba(26, 22, 18, 0.15),
+    0 16px 48px rgba(26, 22, 18, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+.book-card::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  background: linear-gradient(
+    to right,
+    rgba(0, 0, 0, 0.15) 0%,
+    transparent 60%,
+    rgba(255, 255, 255, 0.1) 100%
+  );
+}
+
+/* Upload Zone */
+.upload-zone {
+  border: 2px dashed var(--color-sepia);
+  border-radius: 12px;
+  background: var(--color-paper);
+  transition: all 0.3s ease;
+}
+
+.upload-zone:hover,
+.upload-zone.dragover {
+  border-color: var(--color-gold);
+  background: var(--color-highlight);
+  transform: scale(1.01);
+}
+
+/* Playback Controls */
+.playback-bar {
+  background: linear-gradient(
+    to top,
+    var(--bg-surface) 0%,
+    rgba(250, 246, 240, 0.95) 100%
+  );
+  backdrop-filter: blur(12px);
+  border-top: 1px solid var(--border);
+}
+
+[data-theme="dark"] .playback-bar {
+  background: linear-gradient(
+    to top,
+    var(--bg-surface) 0%,
+    rgba(26, 22, 18, 0.95) 100%
+  );
+}
+
+/* Play Button */
+.play-button {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--color-ink);
+  color: var(--color-paper);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 16px rgba(26, 22, 18, 0.3);
+}
+
+.play-button:hover {
+  transform: scale(1.05);
+  box-shadow: 0 6px 24px rgba(26, 22, 18, 0.4);
+}
+
+.play-button:active {
+  transform: scale(0.98);
+}
+
+[data-theme="dark"] .play-button {
+  background: var(--color-gold);
+  color: var(--color-ink);
+}
+
+/* Progress Bar */
+.progress-track {
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-sepia-dark) 0%, var(--color-gold) 100%);
+  border-radius: 2px;
+  transition: width 0.1s linear;
+}
+
+/* TOC Sidebar */
+.toc-sidebar {
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
+}
+
+.toc-item {
+  padding: 0.75rem 1rem;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  border-left: 3px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.toc-item:hover {
+  background: var(--highlight-sentence);
+  color: var(--text);
+}
+
+.toc-item.active {
+  border-left-color: var(--color-gold);
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* Loading States */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--border) 0%,
+    var(--bg-surface) 50%,
+    var(--border) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Page Transitions */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.4s ease-out forwards;
+}
+
+.animate-fade-in-delay-1 { animation-delay: 0.1s; opacity: 0; }
+.animate-fade-in-delay-2 { animation-delay: 0.2s; opacity: 0; }
+.animate-fade-in-delay-3 { animation-delay: 0.3s; opacity: 0; }
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-sepia);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-sepia-dark);
+}
+
+/* Focus States */
+:focus-visible {
+  outline: 2px solid var(--color-gold);
+  outline-offset: 2px;
+}
+
+/* Button Base */
+.btn {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  padding: 0.625rem 1.25rem;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.btn-primary {
+  background: var(--color-ink);
+  color: var(--color-paper);
+}
+
+.btn-primary:hover {
+  background: var(--color-ink-light);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text);
+}
+
+.btn-ghost:hover {
+  background: var(--highlight-sentence);
+}
+
+/* Icons */
+.icon {
+  width: 1.25em;
+  height: 1.25em;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
 }
