@@ -72,7 +72,8 @@ body {
   --bg-surface: var(--color-paper);
   --text: var(--color-ink);
   --text-muted: var(--color-ink-muted);
-  --text-spoken: #8b7355;  /* Sepia-toned gray for spoken words */
+  --text-spoken: #8b7355;
+  /* Sepia-toned gray for spoken words */
   --border: var(--color-sepia);
   --highlight-sentence: var(--color-highlight);
   --highlight-word: var(--color-gold-light);
@@ -83,7 +84,8 @@ body {
   --bg-surface: #f8f8f8;
   --text: #1a1a1a;
   --text-muted: #666666;
-  --text-spoken: #9ca3af;  /* Neutral gray for spoken words */
+  --text-spoken: #9ca3af;
+  /* Neutral gray for spoken words */
   --border: #e0e0e0;
   --highlight-sentence: #e8f4fd;
   --highlight-word: #bae6fd;
@@ -150,8 +152,15 @@ body {
 }
 
 @keyframes preloadPulse {
-  0%, 100% { background-color: rgba(201, 162, 39, 0.04); }
-  50% { background-color: rgba(201, 162, 39, 0.08); }
+
+  0%,
+  100% {
+    background-color: rgba(201, 162, 39, 0.04);
+  }
+
+  50% {
+    background-color: rgba(201, 162, 39, 0.08);
+  }
 }
 
 [data-theme="dark"] .sentence.sentence-preloading {
@@ -160,8 +169,15 @@ body {
 }
 
 @keyframes preloadPulseDark {
-  0%, 100% { background-color: rgba(201, 162, 39, 0.06); }
-  50% { background-color: rgba(201, 162, 39, 0.12); }
+
+  0%,
+  100% {
+    background-color: rgba(201, 162, 39, 0.06);
+  }
+
+  50% {
+    background-color: rgba(201, 162, 39, 0.12);
+  }
 }
 
 /* Active sentence - use box-shadow for underline (doesn't affect layout) */
@@ -217,6 +233,7 @@ body {
   0% {
     background-color: transparent;
   }
+
   100% {
     background-color: var(--highlight-word);
   }
@@ -270,12 +287,10 @@ body {
   top: 0;
   bottom: 0;
   width: 12px;
-  background: linear-gradient(
-    to right,
-    rgba(0, 0, 0, 0.15) 0%,
-    transparent 60%,
-    rgba(255, 255, 255, 0.1) 100%
-  );
+  background: linear-gradient(to right,
+      rgba(0, 0, 0, 0.15) 0%,
+      transparent 60%,
+      rgba(255, 255, 255, 0.1) 100%);
 }
 
 /* Upload Zone */
@@ -295,21 +310,17 @@ body {
 
 /* Playback Controls */
 .playback-bar {
-  background: linear-gradient(
-    to top,
-    var(--bg-surface) 0%,
-    rgba(250, 246, 240, 0.95) 100%
-  );
+  background: linear-gradient(to top,
+      var(--bg-surface) 0%,
+      rgba(250, 246, 240, 0.95) 100%);
   backdrop-filter: blur(12px);
   border-top: 1px solid var(--border);
 }
 
 [data-theme="dark"] .playback-bar {
-  background: linear-gradient(
-    to top,
-    var(--bg-surface) 0%,
-    rgba(26, 22, 18, 0.95) 100%
-  );
+  background: linear-gradient(to top,
+      var(--bg-surface) 0%,
+      rgba(26, 22, 18, 0.95) 100%);
 }
 
 /* Play Button */
@@ -382,34 +393,55 @@ body {
 
 /* Loading States */
 .skeleton {
-  background: linear-gradient(
-    90deg,
-    var(--border) 0%,
-    var(--bg-surface) 50%,
-    var(--border) 100%
-  );
+  background: linear-gradient(90deg,
+      var(--border) 0%,
+      var(--bg-surface) 50%,
+      var(--border) 100%);
   background-size: 200% 100%;
   animation: shimmer 1.5s infinite;
 }
 
 @keyframes shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+  0% {
+    background-position: 200% 0;
+  }
+
+  100% {
+    background-position: -200% 0;
+  }
 }
 
 /* Page Transitions */
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .animate-fade-in {
   animation: fadeIn 0.4s ease-out forwards;
 }
 
-.animate-fade-in-delay-1 { animation-delay: 0.1s; opacity: 0; }
-.animate-fade-in-delay-2 { animation-delay: 0.2s; opacity: 0; }
-.animate-fade-in-delay-3 { animation-delay: 0.3s; opacity: 0; }
+.animate-fade-in-delay-1 {
+  animation-delay: 0.1s;
+  opacity: 0;
+}
+
+.animate-fade-in-delay-2 {
+  animation-delay: 0.2s;
+  opacity: 0;
+}
+
+.animate-fade-in-delay-3 {
+  animation-delay: 0.3s;
+  opacity: 0;
+}
 
 /* Scrollbar Styling */
 ::-webkit-scrollbar {
@@ -506,77 +538,108 @@ body {
 .timeline-container {
   padding: 0 1rem;
   margin-bottom: 0.75rem;
-}
-
-.timeline-track {
+  width: 100%;
   position: relative;
-  height: 4px;
-  background: var(--border);
-  border-radius: 2px;
-  cursor: pointer;
+  /* For tooltip positioning */
 }
 
-.timeline-preload {
-  position: absolute;
-  left: 0;
-  top: 0;
+.timeline-track.segmented {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  background: transparent;
+  border-radius: 4px;
+  /* Rounded container */
+  overflow: hidden;
+  /* Clip segments at ends */
+  cursor: default;
+  position: relative;
+  /* For tooltip positioning */
+  width: 100%;
+  /* Force full width */
+}
+
+.timeline-track.dense {
+  gap: 0;
+}
+
+.timeline-segment {
+  flex: 1;
   height: 100%;
   background: var(--text-muted);
   opacity: 0.3;
-  border-radius: 2px;
-  transition: width 0.3s ease;
+  /* border-radius removed to allow container clipping */
+  cursor: pointer;
+  transition: all 0.2s ease;
 }
 
-.timeline-progress {
-  position: absolute;
-  left: 0;
-  top: 0;
-  height: 100%;
+.timeline-segment:hover {
+  transform: scaleY(1.2);
+  opacity: 0.8;
+}
+
+.timeline-segment.played {
   background: var(--accent, var(--color-accent-purple));
-  border-radius: 2px;
-  transition: width 0.15s ease;
+  opacity: 0.5;
 }
 
-.timeline-markers {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 100%;
-  display: flex;
-  align-items: center;
-}
-
-.timeline-marker {
-  position: absolute;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  transform: translateX(-50%);
-  transition: transform 0.15s ease, opacity 0.15s ease;
-}
-
-.timeline-marker:hover {
-  transform: translateX(-50%) scale(1.5);
-}
-
-.timeline-marker.played {
-  background: var(--color-accent-green);
+.timeline-segment.ready {
+  background: var(--color-accent-yellow);
   opacity: 0.6;
 }
 
-.timeline-marker.ready {
-  background: var(--color-accent-yellow);
-}
-
-.timeline-marker.playing {
-  background: var(--color-accent-purple);
+.timeline-segment.active {
+  background: var(--accent, var(--color-accent-purple));
+  opacity: 1;
   box-shadow: 0 0 8px var(--accent-glow, var(--color-accent-purple-glow));
+  transform: scaleY(1.2);
 }
 
-.timeline-marker.pending {
+.timeline-segment.pending {
   background: var(--text-muted);
-  opacity: 0.4;
+  opacity: 0.2;
+}
+
+/* Tooltip */
+.timeline-tooltip {
+  position: absolute;
+  bottom: 2rem;
+  /* Position above the track */
+  margin-bottom: 4px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  pointer-events: none;
+  z-index: 20;
+  white-space: nowrap;
+  animation: fadeIn 0.15s ease-out;
+}
+
+[data-theme="dark"] .timeline-tooltip {
+  background: var(--bg-elevated);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.tooltip-content {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.tooltip-label {
+  color: var(--text-muted);
+  text-transform: uppercase;
+  font-size: 0.65rem;
+  letter-spacing: 0.05em;
+}
+
+.tooltip-separator {
+  color: var(--border);
 }
 
 .timeline-time {
@@ -679,6 +742,7 @@ body {
     opacity: 0;
     transform: translateX(-50%) translateY(4px);
   }
+
   to {
     opacity: 1;
     transform: translateX(-50%) translateY(0);
@@ -899,11 +963,9 @@ body {
 }
 
 [data-theme="dark"] .playback-bar {
-  background: linear-gradient(
-    to top,
-    var(--bg-surface) 0%,
-    rgba(10, 10, 10, 0.98) 100%
-  );
+  background: linear-gradient(to top,
+      var(--bg-surface) 0%,
+      rgba(10, 10, 10, 0.98) 100%);
 }
 
 /* Safe area insets for mobile */
@@ -919,9 +981,17 @@ body {
 
 /* Touch feedback animations */
 @keyframes tapFeedback {
-  0% { transform: scale(1); }
-  50% { transform: scale(0.95); }
-  100% { transform: scale(1); }
+  0% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(0.95);
+  }
+
+  100% {
+    transform: scale(1);
+  }
 }
 
 .playback-btn:active,
@@ -931,7 +1001,9 @@ body {
 }
 
 /* Smooth transitions for all interactive elements */
-button, a, input[type="range"] {
+button,
+a,
+input[type="range"] {
   -webkit-tap-highlight-color: transparent;
 }
 
@@ -987,8 +1059,15 @@ button, a, input[type="range"] {
 
 /* Loading animation enhancement */
 @keyframes pulseGlow {
-  0%, 100% { opacity: 0.6; }
-  50% { opacity: 1; }
+
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+
+  50% {
+    opacity: 1;
+  }
 }
 
 .playback-btn.primary:disabled {

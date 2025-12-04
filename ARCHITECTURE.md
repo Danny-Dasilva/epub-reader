@@ -42,6 +42,46 @@ A Next.js PWA that reads EPUB files aloud using Supertonic WebGPU TTS with Parak
           └─────────────────┘   └─────────────────┘   └─────────────────┘
 ```
 
+## Model Sources & Provenance
+
+### TTS Models (Supertone Supertonic)
+
+**Source Repository:** [huggingface.co/Supertone/supertonic](https://huggingface.co/Supertone/supertonic)
+
+Models are downloaded via `scripts/download-models.sh` which runs automatically on `npm install` (postinstall hook).
+
+| Model | Size | Purpose |
+|-------|------|---------|
+| `duration_predictor.onnx` | 1.5 MB | Predicts phoneme durations from text |
+| `text_encoder.onnx` | 27 MB | Encodes text to latent embeddings |
+| `vector_estimator.onnx` | 126 MB | Denoises latent vectors (diffusion model) |
+| `vocoder.onnx` | 97 MB | Generates 44.1kHz waveform from latents |
+| `tts.json` | Config | Model architecture config (v1.5.0) |
+| `unicode_indexer.json` | 256 KB | Character-to-index vocabulary |
+
+**Voice Styles** (from same repository):
+- `M1.json` - Male voice 1
+- `M2.json` - Male voice 2
+- `F1.json` - Female voice 1
+- `F2.json` - Female voice 2
+
+**Total download size:** ~252 MB
+
+### ASR Models (NVIDIA Parakeet-TDT)
+
+**Source Repository:** [huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx)
+
+The parakeet.js library downloads these models **at runtime** (not during install):
+
+| Model | Purpose |
+|-------|---------|
+| `encoder-model.onnx` | Audio encoder (WebGPU/WASM) |
+| `decoder_joint-model.onnx` | Decoder/Joiner for transcription |
+| `vocab.txt` | Tokenizer vocabulary |
+| `nemo128.onnx` | Audio preprocessor (mel spectrogram) |
+
+**Caching:** Models are cached in IndexedDB (`parakeet-cache-db`) after first download (~100-200 MB).
+
 ## Project Structure
 
 ```
@@ -55,9 +95,18 @@ epub-reader/
 │   │       └── [bookId]/page.tsx      # Reader view
 │   │
 │   ├── components/
+│   │   ├── audio/                     # Audio-related components
+│   │   │   ├── PlaybackControls.tsx   # Play/pause, skip, speed controls
+│   │   │   └── Timeline.tsx           # Audio progress timeline
+│   │   ├── reader/                    # Reader-specific components
+│   │   │   ├── SentenceSpan.tsx       # Highlighted sentence display
+│   │   │   └── VirtualizedSentenceList.tsx
+│   │   ├── library/                   # Library-specific components
+│   │   ├── SettingsSheet.tsx          # Settings panel
 │   │   └── ServiceWorkerProvider.tsx  # PWA registration
 │   │
 │   ├── hooks/
+│   │   ├── selectors/                 # Zustand selector hooks
 │   │   └── useAudioPlayback.ts        # Audio state + playback control
 │   │
 │   ├── lib/
@@ -65,59 +114,76 @@ epub-reader/
 │   │   │   ├── types.ts               # ParsedBook, Chapter, Sentence
 │   │   │   ├── parser.ts              # epub.js wrapper
 │   │   │   ├── textExtractor.ts       # HTML → text cleaning
-│   │   │   ├── sentenceTokenizer.ts   # Intl.Segmenter tokenization
+│   │   │   ├── sentenceTokenizer.ts   # sbd sentence tokenization
 │   │   │   └── index.ts
 │   │   │
 │   │   ├── tts/
 │   │   │   ├── types.ts               # TTSConfig, Style, TTSResult
 │   │   │   ├── UnicodeProcessor.ts    # Text normalization
 │   │   │   ├── TextToSpeech.ts        # 4-stage ONNX pipeline
+│   │   │   ├── TTSWorkerManager.ts    # Web Worker management
+│   │   │   ├── tts.worker.ts          # TTS Web Worker
 │   │   │   ├── loader.ts              # Model loading + WebGPU fallback
 │   │   │   ├── audioUtils.ts          # WAV writing, resampling
 │   │   │   └── index.ts
 │   │   │
 │   │   ├── asr/
 │   │   │   ├── types.ts               # WordTimestamp, TranscriptionResult
-│   │   │   ├── parakeet.ts            # Parakeet.js wrapper
+│   │   │   ├── parakeet.ts            # Parakeet.js wrapper (singleton)
 │   │   │   └── index.ts
 │   │   │
 │   │   ├── audio/
 │   │   │   ├── types.ts               # SentenceAudio, PlaybackEvent
-│   │   │   ├── AudioPlayer.ts         # Web Audio API + word tracking
+│   │   │   ├── AudioPlayer.ts         # HTMLAudioElement + word tracking
 │   │   │   ├── AudioSyncService.ts    # Orchestrates TTS + ASR + playback
+│   │   │   ├── PreloadQueueManager.ts # Sentence preloading
 │   │   │   └── index.ts
+│   │   │
+│   │   ├── storage/                   # Storage utilities
+│   │   ├── sync/                      # Sync utilities
 │   │   │
 │   │   └── pwa/
 │   │       ├── serviceWorker.ts       # SW registration utilities
 │   │       └── index.ts
 │   │
-│   ├── store/
-│   │   ├── readerStore.ts             # Zustand: reading state, playback
-│   │   └── libraryStore.ts            # Zustand: book library
+│   ├── store/                         # Zustand state stores (modular)
+│   │   ├── libraryStore.ts            # Book library management
+│   │   ├── navigationStore.ts         # Chapter/sentence navigation
+│   │   ├── playbackStore.ts           # Audio playback state
+│   │   ├── uiStore.ts                 # Theme, font size
+│   │   ├── ttsStore.ts                # TTS model loading state
+│   │   ├── sentenceStateStore.ts      # Current sentence state
+│   │   ├── readerStore.ts             # General reader state
+│   │   └── index.ts                   # Re-exports
 │   │
 │   └── types/
-│       └── parakeet.d.ts              # Type declarations for parakeet.js
+│       ├── parakeet.d.ts              # Type declarations for parakeet.js
+│       └── sbd.d.ts                   # Type declarations for sbd
 │
 ├── public/
-│   ├── models/tts/
-│   │   ├── duration_predictor.onnx    # 1.5 MB
-│   │   ├── text_encoder.onnx          # 28 MB
-│   │   ├── vector_estimator.onnx      # 133 MB
-│   │   ├── vocoder.onnx               # 101 MB
-│   │   ├── tts.json                   # Model config
-│   │   └── unicode_indexer.json       # Text processor vocab
+│   ├── models/tts/                    # Downloaded via postinstall
+│   │   ├── duration_predictor.onnx
+│   │   ├── text_encoder.onnx
+│   │   ├── vector_estimator.onnx
+│   │   ├── vocoder.onnx
+│   │   ├── tts.json
+│   │   └── unicode_indexer.json
 │   │
 │   ├── voice_styles/
-│   │   ├── M1.json                    # Male voice 1
-│   │   ├── M2.json                    # Male voice 2
-│   │   ├── F1.json                    # Female voice 1
-│   │   └── F2.json                    # Female voice 2
+│   │   ├── M1.json, M2.json           # Male voices
+│   │   └── F1.json, F2.json           # Female voices
+│   │
+│   ├── onnx/                          # ONNX Runtime WASM files
+│   │   └── ort-wasm-*.wasm/mjs
 │   │
 │   ├── icons/
 │   │   └── icon.svg                   # PWA icon
 │   │
 │   ├── manifest.json                  # PWA manifest
 │   └── sw.js                          # Service worker
+│
+├── scripts/
+│   └── download-models.sh             # Model download script
 │
 └── package.json
 ```
@@ -217,33 +283,35 @@ interface SentenceAudio {
 
 ### 5. State Management (`store/`)
 
-**readerStore** (Zustand + persist):
+Uses a **modular Zustand architecture** with 7 focused stores instead of a monolithic store. Each store handles a specific domain and uses localStorage persistence via Zustand's `persist` middleware.
+
+| Store | Purpose |
+|-------|---------|
+| `libraryStore` | Book library (uploaded books, metadata) |
+| `navigationStore` | Current chapter/sentence indices |
+| `playbackStore` | isPlaying, speed, volume, voice selection |
+| `uiStore` | Theme, font size preferences |
+| `ttsStore` | TTS model loading state (ready, loading, error) |
+| `sentenceStateStore` | Current sentence highlighting state |
+| `readerStore` | General reader state |
+
+**Example store structure** (playbackStore):
 ```typescript
 {
-  // Book state
-  currentBook: ParsedBook | null;
-  currentChapterIndex: number;
-  currentSentenceIndex: number;
-
-  // UI
-  theme: 'light' | 'dark' | 'sepia';
-  fontSize: number;
-
-  // Playback
   isPlaying: boolean;
-  playbackSpeed: number;
-  volume: number;
+  playbackSpeed: number;      // 0.5 - 2.0
+  volume: number;             // 0 - 1
   currentVoice: 'M1' | 'M2' | 'F1' | 'F2';
 
-  // TTS
-  ttsReady: boolean;
-  ttsLoading: boolean;
-
-  // Highlighting
-  highlightedSentenceId: string | null;
-  highlightedWordIndex: number | null;
+  // Actions
+  setIsPlaying: (playing: boolean) => void;
+  setPlaybackSpeed: (speed: number) => void;
+  setVolume: (volume: number) => void;
+  setCurrentVoice: (voice: string) => void;
 }
 ```
+
+Selector hooks in `hooks/selectors/` provide optimized access patterns.
 
 ### 6. PWA (`public/sw.js`)
 
@@ -354,15 +422,25 @@ Three built-in themes:
 
 ```json
 {
-  "next": "^16.0.4",
-  "react": "^19.1.0",
+  "next": "16.0.4",
+  "react": "19.2.0",
+  "react-dom": "19.2.0",
   "epubjs": "^0.3.93",
-  "onnxruntime-web": "^1.21.0",
-  "parakeet.js": "^0.2.2",
-  "zustand": "^5.0.5",
-  "tailwindcss": "^4.1.8"
+  "onnxruntime-web": "^1.23.2",
+  "parakeet.js": "^0.0.3",
+  "zustand": "^5.0.8",
+  "sbd": "^1.0.19",
+  "tailwindcss": "^4"
 }
 ```
+
+| Package | Purpose |
+|---------|---------|
+| `epubjs` | EPUB file parsing and chapter extraction |
+| `onnxruntime-web` | ONNX model inference (WebGPU/WASM) |
+| `parakeet.js` | Word-level ASR timestamps |
+| `sbd` | Sentence boundary detection for text tokenization |
+| `zustand` | Lightweight state management |
 
 ## Browser Requirements
 
@@ -372,8 +450,11 @@ Three built-in themes:
 
 ## Performance Notes
 
-- TTS generation: ~1-3s per sentence (first time)
+- TTS generation: ~1-3s per sentence (first time, cached thereafter)
 - Parakeet ASR: ~0.5-1s per sentence
 - Preload: Next 3 sentences cached while playing
 - Memory: ~500MB for models in VRAM/RAM
-- Storage: ~262MB for TTS models, Parakeet caches in IndexedDB
+- Storage:
+  - TTS models: ~252 MB (downloaded on npm install)
+  - ONNX WASM files: ~34 MB
+  - Parakeet ASR: ~100-200 MB (cached in IndexedDB on first use)

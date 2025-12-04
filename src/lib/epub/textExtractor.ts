@@ -129,6 +129,36 @@ export function extractChapterText(html: string): string {
 }
 
 /**
+ * Extract chapter title from HTML content by looking at heading tags.
+ * Tries tags in priority order: title, h1, h2, h3
+ * Returns null if no suitable title is found.
+ */
+export function extractChapterTitleFromHTML(html: string): string | null {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+
+  // Try tags in priority order (like epub_to_audiobook approach)
+  const titleTags = ['title', 'h1', 'h2', 'h3'];
+
+  for (const tag of titleTags) {
+    const element = doc.querySelector(tag);
+    if (element?.textContent?.trim()) {
+      const title = element.textContent.trim();
+      // Skip if it's just a number (like "1" or "12") or empty after cleaning
+      if (!/^\d+$/.test(title) && title.length > 0) {
+        // Clean the title but preserve more than the body text cleaner does
+        return title
+          .replace(/\s+/g, ' ')  // Normalize whitespace
+          .replace(/\n/g, ' ')   // Remove newlines
+          .trim();
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
  * Remove Roman numerals from text (convert to words)
  */
 export function convertRomanNumerals(text: string): string {

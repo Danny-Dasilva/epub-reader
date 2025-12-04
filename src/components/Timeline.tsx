@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useCallback, useMemo } from 'react';
+import { memo, useCallback, useMemo, useState } from 'react';
 import { SentenceAudioState } from '@/store/sentenceStateStore';
 
 interface TimelineProps {
@@ -30,6 +30,8 @@ export const Timeline = memo(function Timeline({
 }: TimelineProps) {
   // Current playback position as percentage
   const playProgress = totalSentences > 0 ? ((currentIndex + 1) / totalSentences) * 100 : 0;
+
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
   // Calculate preload progress - count sentences that are ready, preloading, played, or playing
   const preloadStats = useMemo(() => {
@@ -123,46 +125,57 @@ export const Timeline = memo(function Timeline({
   return (
     <div className="timeline-container">
       <div
-        className="timeline-track"
-        onClick={handleTrackClick}
+        className={`timeline-track segmented ${totalSentences > 60 ? 'dense' : ''}`}
         role="slider"
         aria-valuemin={0}
         aria-valuemax={totalSentences}
         aria-valuenow={currentIndex}
         tabIndex={0}
+        onMouseLeave={() => setHoveredIndex(null)}
       >
-        {/* Preload progress (subtle, shows % processed) */}
-        <div
-          className="timeline-preload"
-          style={{ width: `${preloadStats.preloadPercentage}%` }}
-        />
+        {sentenceIds.map((id, index) => {
+          const state = sentenceStates[id] || 'pending';
+          const isPlayed = index < currentIndex;
+          const isCurrent = index === currentIndex;
 
-        {/* Played progress (purple, shows current position) */}
-        <div
-          className="timeline-progress"
-          style={{ width: `${playProgress}%` }}
-        />
+          let segmentClass = 'timeline-segment';
+          if (isCurrent) segmentClass += ' active';
+          else if (isPlayed) segmentClass += ' played';
+          else if (state === 'ready' || state === 'preloading') segmentClass += ' ready';
+          else segmentClass += ' pending';
 
-        {/* Sentence markers */}
-        <div className="timeline-markers">
-          {visibleMarkers.map(({ id, index, position, state }) => (
-            <button
+          return (
+            <div
               key={id}
-              className={`timeline-marker ${getMarkerClass(state, index)}`}
-              style={{ left: `${position}%` }}
+              className={segmentClass}
               onClick={(e) => {
                 e.stopPropagation();
                 onSeek(index);
               }}
-              title={`Sentence ${index + 1}`}
+              onMouseEnter={() => setHoveredIndex(index)}
+              title={undefined} // Disable native title to use custom tooltip
             />
-          ))}
-        </div>
+          );
+        })}
       </div>
 
+      {hoveredIndex !== null && (
+        <div
+          className="timeline-tooltip"
+          style={{
+            left: `${((hoveredIndex + 0.5) / totalSentences) * 100}%`,
+            transform: 'translateX(-50%)'
+          }}
+        >
+          <div className="tooltip-content">
+            <span className="tooltip-label">Sentence</span>
+            <span className="tooltip-value">{hoveredIndex + 1} <span className="tooltip-separator">/</span> {totalSentences}</span>
+          </div>
+        </div>
+      )}
+
       <div className="timeline-time">
-        <span>{formatTime(currentTime)}</span>
-        <span>-{formatTime(Math.max(0, remainingTime))}</span>
+        <span>{Math.round(((currentIndex + 1) / totalSentences) * 100)}% Complete</span>
       </div>
     </div>
   );
