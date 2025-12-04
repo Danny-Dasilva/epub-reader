@@ -1,6 +1,6 @@
 import ePub, { Book, NavItem } from 'epubjs';
 import { ParsedBook, Chapter, TOCItem, Sentence } from './types';
-import { extractChapterText } from './textExtractor';
+import { extractChapterText, extractChapterTitleFromHTML } from './textExtractor';
 import { tokenizeSentences, splitLongSentences } from './sentenceTokenizer';
 
 /**
@@ -116,9 +116,17 @@ export class EpubParser {
         // Skip chapters with very little content
         if (plainText.length < 50) continue;
 
-        // Tokenize into sentences
+        // Extract chapter title from HTML tags, falling back to spine metadata
+        const htmlTitle = extractChapterTitleFromHTML(html);
+        const chapterTitle = htmlTitle || this.getChapterTitle(item, i);
+
+        // Create spoken content with title prepended for TTS
+        // The title will be read as the first sentence of the chapter
+        const spokenText = `${chapterTitle}.\n\n${plainText}`;
+
+        // Tokenize into sentences (includes title as first sentence)
         const chapterId = item.idref || `chapter-${i}`;
-        let sentences = tokenizeSentences(plainText, chapterId);
+        let sentences = tokenizeSentences(spokenText, chapterId);
 
         // Split long sentences for better TTS
         sentences = splitLongSentences(sentences, 200);
@@ -126,7 +134,7 @@ export class EpubParser {
         chapters.push({
           id: chapterId,
           href: item.href || '',
-          title: this.getChapterTitle(item, i),
+          title: chapterTitle,
           content: html,
           plainText,
           sentences
