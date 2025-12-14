@@ -92,8 +92,8 @@ export class PreloadQueueManager {
       urgentSteps: 3,
       maxCacheSize: adaptiveCacheSize,
       maxConcurrentTTS: 2,      // Process 2 batches concurrently
-      batchCharLimit: 1000,     // Batch short sentences up to 1000 chars total
-      singleSentenceLimit: 400, // Only batch sentences shorter than 400 chars
+      batchCharLimit: 600,      // Smaller batches = less post-processing overhead
+      singleSentenceLimit: 600, // More sentences skip batch splitting (processed individually)
       ...config
     };
   }
@@ -672,10 +672,11 @@ export class PreloadQueueManager {
 
       const audio = await this.createSentenceAudio(sentence, result);
       this.cache.set(sentence.id, audio);
-      this.touchAccess(sentence.id);
       this.stateCallback?.(sentence.id, 'ready');
 
-      return audio;
+      // Return via getAudio() to ensure blobUrl is created (lazy creation)
+      // Note: touchAccess() is called inside getAudio(), so we don't need it here
+      return this.getAudio(sentence.id)!;
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) {
         this.stateCallback?.(sentence.id, 'error');

@@ -11,46 +11,29 @@ const BLACKLIST_TAGS = [
 /**
  * Clean text for TTS processing
  * Adapted from prep_text() in epub2tts.py lines 171-195
+ * Optimized: Combined regex operations to reduce string passes
  */
 export function cleanText(text: string): string {
-  let cleaned = text
-    // Replace dashes and symbols
-    .replace(/--/g, ', ')
-    .replace(/—/g, ', ')
-    .replace(/–/g, ', ')
-    .replace(/;/g, ', ')
-    .replace(/:/g, ', ')
-    .replace(/''/g, ', ')
-    // Normalize quotes
-    .replace(/'/g, "'")
-    .replace(/'/g, "'")
-    .replace(/"/g, '"')
-    .replace(/"/g, '"')
-    .replace(/«/g, '"')
-    .replace(/»/g, '"')
-    // Remove special chars
-    .replace(/◇/g, '')
-    .replace(/\[/g, '')
-    .replace(/\]/g, '')
+  return text
+    // Combined: Replace dashes, semicolons, colons, double quotes, ellipses → comma
+    .replace(/--|—|–|;|:|''| \. \. \. |\.\.\. |…/g, ', ')
+    // Combined: Normalize smart quotes (apostrophes)
+    .replace(/['']/g, "'")
+    // Combined: Normalize smart quotes (double quotes)
+    .replace(/[""«»]/g, '"')
+    // Combined: Remove special chars (◇, [, ])
+    .replace(/[◇\[\]]/g, '')
+    // Replace asterisk with space
     .replace(/\*/g, ' ')
-    // Handle ellipses
-    .replace(/ \. \. \. /g, ', ')
-    .replace(/\.\.\. /g, ', ')
-    .replace(/…/g, ', ')
     // Replace ampersand
     .replace(/&/g, ' and ')
     // Normalize newlines
     .replace(/\n/g, ' ')
-    // Fix spacing around punctuation
-    .replace(/ ,/g, ',')
-    .replace(/ \./g, '.')
-    .replace(/ !/g, '!')
-    .replace(/ \?/g, '?')
+    // Combined: Fix spacing around punctuation
+    .replace(/ ([,\.!\?])/g, '$1')
     // Remove extra spaces
     .replace(/\s+/g, ' ')
     .trim();
-
-  return cleaned;
 }
 
 /**
