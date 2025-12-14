@@ -59,6 +59,7 @@ export class PreloadQueueManager {
   private currentPlayingIndex: number = -1;     // Track playback position
   private currentSentences: Sentence[] = [];    // Current sentence list
   private parakeet: ParakeetASR | null = null;  // Lazy-loaded ASR instance
+  private parakeetInitPromise: Promise<ParakeetASR> | null = null;  // Track initialization
   private asrCompleteCallback: ((sentenceId: string, timestamps: WordTimestamp[]) => void) | null = null;
 
   constructor(ttsManager: TTSWorkerManager, config: Partial<PreloadConfig> = {}) {
@@ -520,6 +521,54 @@ export class PreloadQueueManager {
   }
 
   /**
+   * Preload entire chapter without count/char limits
+   * Processes all sentences from startIndex to end of chapter
+   * Cache eviction (LRU, maxCacheSize) still applies to bound memory
+   */
+  preloadFullChapter(sentences: Sentence[], startIndex: number): void {
+    // Cancel existing session
+    this.cancelSession();
+    this.sessionController = new AbortController();
+
+    // Queue ALL remaining sentences (no count/char limits)
+    const toPreload: Sentence[] = [];
+    for (let i = startIndex; i < sentences.length; i++) {
+      if (!this.cache.has(sentences[i].id)) {
+        toPreload.push(sentences[i]);
+      }
+    }
+
+    if (toPreload.length === 0) {
+      return; // Nothing to preload
+    }
+
+    // Create queue with priorities
+    this.queue = toPreload.map((sentence, index) => ({
+      sentence,
+      priority: index,
+      abortController: new AbortController()
+    }));
+
+    // Link abort controllers to session
+    this.sessionController.signal.addEventListener('abort', () => {
+      this.queue.forEach(req => req.abortController.abort());
+      if (this.processing) {
+        this.processing.abortController.abort();
+      }
+    });
+
+    // Mark all as preloading
+    toPreload.forEach(sentence => {
+      this.stateCallback?.(sentence.id, 'preloading');
+    });
+
+    console.log(`[Preload] Queued ${toPreload.length} sentences for full chapter preload`);
+
+    // Start processing
+    this.processQueue();
+  }
+
+  /**
    * Check if a sentence is currently queued
    */
   isQueued(sentenceId: string): boolean {
@@ -718,16 +767,59 @@ export class PreloadQueueManager {
   }
 
   /**
-   * Lazily initialize Parakeet ASR
+   * Request persistent storage to get higher IndexedDB quota for model caching
+   * This prevents large model files from being evicted by the browser
+   */
+  private async requestPersistentStorage(): Promise<void> {
+    if (typeof navigator !== 'undefined' && navigator.storage?.persist) {
+      try {
+        const isPersisted = await navigator.storage.persisted();
+        if (!isPersisted) {
+          const granted = await navigator.storage.persist();
+          console.log(`[ASR] Persistent storage ${granted ? 'granted' : 'denied'}`);
+        } else {
+          console.log('[ASR] Persistent storage already granted');
+        }
+      } catch (e) {
+        console.warn('[ASR] Could not request persistent storage:', e);
+      }
+    }
+  }
+
+  /**
+   * Lazily initialize Parakeet ASR with proper promise tracking
+   * Handles concurrent calls correctly by sharing the initialization promise
    */
   private async ensureParakeetReady(): Promise<ParakeetASR> {
-    if (!this.parakeet) {
+    // If already initialized and no pending promise, return immediately
+    if (this.parakeet && !this.parakeetInitPromise) {
+      return this.parakeet;
+    }
+
+    // If initialization in progress, wait for it
+    if (this.parakeetInitPromise) {
+      return this.parakeetInitPromise;
+    }
+
+    // Start initialization and track the promise
+    this.parakeetInitPromise = (async () => {
+      // Request persistent storage for better caching of large model files
+      await this.requestPersistentStorage();
+
       this.parakeet = getSharedParakeetASR();
       console.log('[ASR] Initializing Parakeet...');
       await this.parakeet.initialize();
       console.log('[ASR] Parakeet ready');
+      return this.parakeet;
+    })();
+
+    try {
+      const result = await this.parakeetInitPromise;
+      return result;
+    } finally {
+      // Clear promise after completion (success or failure)
+      this.parakeetInitPromise = null;
     }
-    return this.parakeet;
   }
 
   /**

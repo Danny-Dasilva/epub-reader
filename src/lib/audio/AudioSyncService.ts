@@ -144,6 +144,14 @@ export class AudioSyncService {
   }
 
   /**
+   * Preload entire chapter without count/char limits
+   * Cache eviction (LRU) still applies to bound memory
+   */
+  preloadFullChapter(sentences: Sentence[], startIndex: number): void {
+    this.preloadManager.preloadFullChapter(sentences, startIndex);
+  }
+
+  /**
    * Set callback for when a preload item completes (for continuous queue extension)
    */
   setOnPreloadComplete(callback: (sentenceId: string, cacheSize: number) => void): void {
@@ -325,6 +333,14 @@ export class AudioSyncService {
    */
   clearASRQueue(): void {
     this.preloadManager.clearASRQueue();
+  }
+
+  /**
+   * Start preloading the Parakeet ASR model in background (non-blocking)
+   * Call after TTS initialization to have ASR ready when needed
+   */
+  preloadParakeet(): void {
+    this.preloadManager.preloadParakeet();
   }
 
   /**
