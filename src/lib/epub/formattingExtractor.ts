@@ -4,6 +4,7 @@
  */
 
 import { FormattingSpan, FormattingType, BlockBoundary, BlockType } from './types';
+import { cleanText } from './textExtractor';
 
 // HTML tags to remove (blacklist from epub2tts.py)
 const BLACKLIST_TAGS = new Set([
@@ -53,27 +54,6 @@ interface ExtractorState {
 }
 
 /**
- * Clean text for TTS processing (simplified version that preserves more for reading)
- * Less aggressive than the original cleanText to preserve readability
- */
-function cleanTextForReading(text: string): string {
-  return text
-    // Normalize quotes
-    .replace(/'/g, "'")
-    .replace(/'/g, "'")
-    .replace(/"/g, '"')
-    .replace(/"/g, '"')
-    .replace(/«/g, '"')
-    .replace(/»/g, '"')
-    // Replace ampersand
-    .replace(/&/g, ' and ')
-    // Normalize whitespace (but don't collapse all newlines)
-    .replace(/\t/g, ' ')
-    .replace(/ +/g, ' ')
-    .trim();
-}
-
-/**
  * Get heading level from tag name
  */
 function getHeadingLevel(tagName: string): number {
@@ -116,7 +96,7 @@ function processNode(node: Node, state: ExtractorState): void {
 
   if (node.nodeType === Node.TEXT_NODE) {
     const text = node.textContent || '';
-    const cleaned = cleanTextForReading(text);
+    const cleaned = cleanText(text);
 
     if (cleaned.length > 0) {
       // Record formatting spans for this text

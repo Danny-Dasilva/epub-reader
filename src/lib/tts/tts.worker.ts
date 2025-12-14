@@ -365,9 +365,9 @@ async function synthesize(
     });
     const textEmb = textEncOutputs.text_emb;
 
-    // Dispose input tensors now that we have the outputs
+    // Dispose textIdsTensor - no longer needed after text encoding
+    // NOTE: textMaskTensor is still needed in the denoising loop, dispose it later
     textIdsTensor.dispose?.();
-    textMaskTensor.dispose?.();
 
     // Sample noisy latent
     let { xt, latentMask } = sampleNoisyLatent(
@@ -393,6 +393,7 @@ async function synthesize(
         // Dispose tensors before returning
         latentMaskTensor.dispose?.();
         totalStepTensor.dispose?.();
+        textMaskTensor.dispose?.();
         textEmb.dispose?.();
         return null;
       }
@@ -452,6 +453,7 @@ async function synthesize(
       // Dispose remaining tensors before returning
       latentMaskTensor.dispose?.();
       totalStepTensor.dispose?.();
+      textMaskTensor.dispose?.();
       textEmb.dispose?.();
       return null;
     }
@@ -459,6 +461,7 @@ async function synthesize(
     // Dispose tensors used in the denoising loop (no longer needed)
     latentMaskTensor.dispose?.();
     totalStepTensor.dispose?.();
+    textMaskTensor.dispose?.();
     textEmb.dispose?.();
 
     // Generate waveform
