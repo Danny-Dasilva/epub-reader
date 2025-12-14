@@ -336,6 +336,14 @@ export class AudioSyncService {
   }
 
   /**
+   * Initialize the AudioContext early (in response to user gesture)
+   * This warms up the audio system before first playback
+   */
+  async initAudioContext(): Promise<void> {
+    await this.player.initAudioContext();
+  }
+
+  /**
    * Start preloading the Parakeet ASR model in background (non-blocking)
    * Call after TTS initialization to have ASR ready when needed
    */

@@ -109,6 +109,12 @@ export function useAudioPlayback() {
         setTTSReady(true);
         setTTSBackend(service.getBackend());
 
+        // Warm up AudioContext early (must be in response to user gesture)
+        // Opening a book counts as user interaction
+        service.initAudioContext().catch(error => {
+          console.warn('Failed to initialize AudioContext:', error);
+        });
+
         // Start preloading Parakeet ASR model in background (non-blocking)
         // This ensures ASR is ready when we have enough buffer for timestamp refinement
         service.preloadParakeet();

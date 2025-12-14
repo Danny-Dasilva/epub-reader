@@ -302,6 +302,10 @@ export class AudioPlayer {
     return this.ensureAudioContext();
   }
 
+  async initAudioContext(): Promise<void> {
+    await this.ensureAudioContext();
+  }
+
   async decodeAudioData(arrayBuffer: ArrayBuffer): Promise<AudioBuffer> {
     const ctx = await this.ensureAudioContext();
     return ctx.decodeAudioData(arrayBuffer);

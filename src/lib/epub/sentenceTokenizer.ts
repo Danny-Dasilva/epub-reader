@@ -1,5 +1,6 @@
 import tokenizer from 'sbd';
 import { Sentence, FormattingSpan, BlockBoundary } from './types';
+import { preprocessText } from '../tts/textPreprocessor';
 
 /**
  * Tokenize text into sentences using the sbd (Sentence Boundary Detection) library.
@@ -33,7 +34,8 @@ export function tokenizeSentences(
         text: trimmed,
         startIndex: startIndex >= 0 ? startIndex : currentIndex,
         endIndex: startIndex >= 0 ? startIndex + trimmed.length : currentIndex + trimmed.length,
-        chapterId
+        chapterId,
+        preprocessedText: preprocessText(trimmed)
       };
     });
 }
@@ -57,12 +59,14 @@ export function splitLongSentences(
       let offset = sentence.startIndex;
 
       parts.forEach((part, i) => {
+        const trimmedPart = part.trim();
         result.push({
           id: `${sentence.id}-${i}`,
-          text: part.trim(),
+          text: trimmedPart,
           startIndex: offset,
           endIndex: offset + part.length,
-          chapterId: sentence.chapterId
+          chapterId: sentence.chapterId,
+          preprocessedText: preprocessText(trimmedPart)
         });
         offset += part.length;
       });
@@ -226,7 +230,8 @@ export function tokenizeSentencesWithFormatting(
       blockType: block?.type,
       blockLevel: block?.level,
       isBlockStart: isBlockStart || undefined,
-      isBlockEnd: isBlockEnd || undefined
+      isBlockEnd: isBlockEnd || undefined,
+      preprocessedText: sentence.preprocessedText || preprocessText(sentence.text)
     };
   });
 }
@@ -262,9 +267,10 @@ export function splitLongSentencesWithFormatting(
           }))
           .filter(span => span.endIndex > span.startIndex);
 
+        const trimmedPart = part.trim();
         result.push({
           id: `${sentence.id}-${i}`,
-          text: part.trim(),
+          text: trimmedPart,
           startIndex: sentence.startIndex + partStart,
           endIndex: sentence.startIndex + partEnd,
           chapterId: sentence.chapterId,
@@ -272,7 +278,8 @@ export function splitLongSentencesWithFormatting(
           blockType: sentence.blockType,
           blockLevel: sentence.blockLevel,
           isBlockStart: i === 0 ? sentence.isBlockStart : undefined,
-          isBlockEnd: i === parts.length - 1 ? sentence.isBlockEnd : undefined
+          isBlockEnd: i === parts.length - 1 ? sentence.isBlockEnd : undefined,
+          preprocessedText: preprocessText(trimmedPart)
         });
         offset += part.length;
       });

@@ -45,6 +45,8 @@ export interface Sentence {
   blockLevel?: number;
   isBlockStart?: boolean;
   isBlockEnd?: boolean;
+  // Preprocessed text for TTS (computed at parse time to avoid repeated preprocessing)
+  preprocessedText?: string;
 }
 
 export interface TOCItem {

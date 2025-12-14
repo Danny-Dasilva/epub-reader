@@ -21,7 +21,8 @@ export interface PreloadConfig {
   preloadCount: number;      // Max number of sentences to preload ahead (default: 4)
   preloadCharLimit: number;  // Target character count limit (default: 800)
   speed: number;             // Playback speed
-  totalSteps: number;        // TTS denoising steps
+  totalSteps: number;        // TTS denoising steps for preloaded sentences (default: 5)
+  urgentSteps: number;       // Steps for urgent/current sentences (default: 3)
   maxCacheSize: number;      // Max number of cached sentences (default: 20)
   maxConcurrentTTS: number;  // Max concurrent TTS synthesis operations (default: 2)
   batchCharLimit: number;    // Max combined chars for batching short sentences (default: 600)
@@ -57,6 +58,7 @@ export class PreloadQueueManager {
   private stateCallback: PreloadStateCallback | null = null;
   private audioContext: AudioContext | null = null;
   private sampleRate: number = 44100;
+  private playbackRate: number = 1.0;
 
   // Blob URL tracking for memory leak prevention
   private blobUrls: Map<string, string> = new Map();
@@ -87,10 +89,11 @@ export class PreloadQueueManager {
       preloadCharLimit: 800,
       speed: 1.0,
       totalSteps: 5,
+      urgentSteps: 3,
       maxCacheSize: adaptiveCacheSize,
       maxConcurrentTTS: 2,      // Process 2 batches concurrently
-      batchCharLimit: 600,      // Batch short sentences up to 600 chars total
-      singleSentenceLimit: 300, // Only batch sentences shorter than 300 chars
+      batchCharLimit: 1000,     // Batch short sentences up to 1000 chars total
+      singleSentenceLimit: 400, // Only batch sentences shorter than 400 chars
       ...config
     };
   }
@@ -113,6 +116,13 @@ export class PreloadQueueManager {
     if (speedChanged) {
       this.clearCache();
     }
+  }
+
+  /**
+   * Set playback rate for conditional ASR optimization
+   */
+  setPlaybackRate(rate: number): void {
+    this.playbackRate = rate;
   }
 
   /**
@@ -218,7 +228,7 @@ export class PreloadQueueManager {
 
       if (batch.sentences.length === 1) {
         // Single sentence - process normally
-        this.processSingleSentence(batch.sentences[0], batch.abortController);
+        this.processSingleSentence(batch.sentences[0], batch.abortController, batch.priority);
       } else {
         // Multiple sentences - process as batch
         console.log(`[Preload] Batched ${batch.sentences.length} sentences (${batch.combinedText.length} chars)`);
@@ -279,12 +289,13 @@ export class PreloadQueueManager {
     if (batch.length === 0) return null;
 
     // Build combined text and boundaries
+    // Use preprocessed text if available, otherwise use raw text
     let combinedText = '';
     const charBoundaries: number[] = [];
 
     batch.forEach((sentence, i) => {
       if (i > 0) combinedText += ' ';  // Space between sentences
-      combinedText += sentence.text;
+      combinedText += sentence.preprocessedText || sentence.text;
       charBoundaries.push(combinedText.length);
     });
 
@@ -300,19 +311,23 @@ export class PreloadQueueManager {
   /**
    * Process a single sentence (non-batched)
    */
-  private async processSingleSentence(sentence: Sentence, abortController: AbortController): Promise<void> {
+  private async processSingleSentence(sentence: Sentence, abortController: AbortController, priority: number): Promise<void> {
     try {
       // Check if cancelled before starting
       if (abortController.signal.aborted) {
         return;
       }
 
+      // Use fewer steps for urgent requests (priority 0 = current sentence)
+      const totalSteps = priority === 0 ? this.config.urgentSteps : this.config.totalSteps;
+
       // Synthesize audio
       const result = await this.ttsManager.synthesize(
         sentence.text,
         {
           speed: this.config.speed,
-          totalSteps: this.config.totalSteps
+          totalSteps: totalSteps,
+          preprocessedText: sentence.preprocessedText
         },
         abortController.signal
       );
@@ -355,10 +370,14 @@ export class PreloadQueueManager {
     try {
       if (batch.abortController.signal.aborted) return;
 
+      // Use fewer steps for urgent requests (priority 0 = current sentence)
+      const totalSteps = batch.priority === 0 ? this.config.urgentSteps : this.config.totalSteps;
+
       // Synthesize combined text
+      // Note: batch.combinedText already uses preprocessed text from createBatch()
       const result = await this.ttsManager.synthesize(
         batch.combinedText,
-        { speed: this.config.speed, totalSteps: this.config.totalSteps },
+        { speed: this.config.speed, totalSteps: totalSteps, preprocessedText: batch.combinedText },
         batch.abortController.signal
       );
 
@@ -415,19 +434,16 @@ export class PreloadQueueManager {
       const sentenceWav = result.wav.slice(prevSampleEnd, sampleEnd);
       const sentenceDuration = timeEnd - prevTimeEnd;
 
-      // Create blob URL and AudioBuffer
-      const wavBuffer = float32ToWav(sentenceWav, result.sampleRate);
-      const blobUrl = this.createAndTrackBlobUrl(sentence.id, wavBuffer);
-      const audioBuffer = await this.createAudioBuffer(sentenceWav, result.sampleRate);
-
+      // Skip WAV/blob URL creation here - defer until playback for faster preloading
       // Estimate word timings for this sentence
       const wordTimestamps = this.estimateWordTimings(sentence.text, sentenceDuration);
 
       audioObjects.push({
         sentenceId: sentence.id,
         text: sentence.text,
-        audioBuffer,
-        blobUrl,
+        rawPcm: sentenceWav,
+        sampleRate: result.sampleRate,
+        // blobUrl created lazily in getAudio() when needed for playback
         wordTimestamps,
         duration: sentenceDuration,
         timestampSource: 'estimated'
@@ -498,26 +514,22 @@ export class PreloadQueueManager {
 
   /**
    * Create a SentenceAudio object from synthesis result
+   * WAV/blob URL creation is deferred until getAudio() for faster preloading
    */
   private async createSentenceAudio(
     sentence: Sentence,
     result: TTSSynthesisResult
   ): Promise<SentenceAudio> {
-    // Create blob URL for HTMLAudioElement playback with preservesPitch
-    const wavBuffer = float32ToWav(result.wav, result.sampleRate);
-    const blobUrl = this.createAndTrackBlobUrl(sentence.id, wavBuffer);
-
-    // Create AudioBuffer (kept for potential fallback)
-    const audioBuffer = await this.createAudioBuffer(result.wav, result.sampleRate);
-
+    // Store raw PCM data - blob URL created lazily in getAudio() for faster preloading
     // Estimate word timings with character-weighted distribution
     const wordTimestamps = this.estimateWordTimings(sentence.text, result.duration);
 
     return {
       sentenceId: sentence.id,
       text: sentence.text,
-      audioBuffer,
-      blobUrl,
+      rawPcm: result.wav,
+      sampleRate: result.sampleRate,
+      // blobUrl created lazily in getAudio() when needed for playback
       wordTimestamps,
       duration: result.duration,
       timestampSource: 'estimated' as const
@@ -584,11 +596,18 @@ export class PreloadQueueManager {
 
   /**
    * Get cached audio for a sentence (updates LRU tracking)
+   * Creates blob URL lazily if not already present (deferred from preload for speed)
    */
   getAudio(sentenceId: string): SentenceAudio | undefined {
     const audio = this.cache.get(sentenceId);
     if (audio) {
       this.touchAccess(sentenceId);
+
+      // Lazy blob URL creation - deferred from preload for faster synthesis pipeline
+      if (!audio.blobUrl && audio.rawPcm) {
+        const wavBuffer = float32ToWav(audio.rawPcm, audio.sampleRate);
+        audio.blobUrl = this.createAndTrackBlobUrl(sentenceId, wavBuffer);
+      }
     }
     return audio;
   }
@@ -612,15 +631,38 @@ export class PreloadQueueManager {
     const cached = this.getAudio(sentence.id);
     if (cached) return cached;
 
+    // If worker is busy with preload, cancel it to prioritize this sentence
+    // This ensures the user doesn't wait for background preload to complete
+    if (this.ttsManager.isBusy() || this.ttsManager.queueLength() > 0) {
+      console.log('[Preload] Cancelling preload to prioritize current sentence');
+
+      // Cancel all queued and active TTS requests
+      this.ttsManager.cancelAll();
+
+      // Clear our internal queue and reset state for cancelled items
+      this.queue.forEach(req => {
+        this.stateCallback?.(req.sentence.id, 'pending');
+      });
+      this.queue = [];
+
+      // Clear active requests and reset their state
+      this.activeRequests.forEach(req => {
+        this.stateCallback?.(req.sentence.id, 'pending');
+      });
+      this.activeRequests.clear();
+    }
+
     // Update state
     this.stateCallback?.(sentence.id, 'preloading');
 
     try {
+      // Use urgent steps for immediate playback (user is waiting)
       const result = await this.ttsManager.synthesize(
         sentence.text,
         {
           speed: this.config.speed,
-          totalSteps: this.config.totalSteps
+          totalSteps: this.config.urgentSteps,
+          preprocessedText: sentence.preprocessedText
         },
         signal
       );
@@ -850,9 +892,15 @@ export class PreloadQueueManager {
   }
 
   /**
-   * Check if we have enough buffer to run ASR (2+ sentences ahead)
+   * Check if we have enough buffer to run ASR (5+ sentences ahead)
+   * Skip ASR at high playback speeds (1.5x+) as precise timestamps are less critical
    */
   private canRunASR(): boolean {
+    // Skip ASR at high playback speeds
+    if (this.playbackRate >= 1.5) {
+      return false;
+    }
+
     if (this.currentPlayingIndex < 0 || this.currentSentences.length === 0) {
       console.log('[ASR] canRunASR: false (no position or sentences)');
       return false;
@@ -862,7 +910,7 @@ export class PreloadQueueManager {
     for (let i = this.currentPlayingIndex + 1; i < this.currentSentences.length; i++) {
       if (this.cache.has(this.currentSentences[i].id)) {
         readyAhead++;
-        if (readyAhead >= 2) {
+        if (readyAhead >= 5) {
           console.log(`[ASR] canRunASR: true (readyAhead=${readyAhead})`);
           return true;
         }
@@ -870,7 +918,7 @@ export class PreloadQueueManager {
         break; // Gap in cache, stop counting
       }
     }
-    console.log(`[ASR] canRunASR: false (readyAhead=${readyAhead}, need 2+)`);
+    console.log(`[ASR] canRunASR: false (readyAhead=${readyAhead}, need 5+)`);
     return false;
   }
 
@@ -948,9 +996,9 @@ export class PreloadQueueManager {
       // Ensure Parakeet is ready
       const parakeet = await this.ensureParakeetReady();
 
-      // Extract audio data and resample for ASR (44.1kHz → 16kHz)
-      const audioData = audio.audioBuffer.getChannelData(0);
-      const audio16k = resampleAudio(audioData, this.sampleRate, 16000);
+      // Extract audio data from raw PCM and resample for ASR (44.1kHz → 16kHz)
+      const audioData = audio.rawPcm;
+      const audio16k = resampleAudio(audioData, audio.sampleRate, 16000);
 
       // Run ASR
       const result = await parakeet.transcribe(audio16k, 16000);
