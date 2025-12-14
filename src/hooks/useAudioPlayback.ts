@@ -107,22 +107,13 @@ export function useAudioPlayback() {
         setTTSReady(true);
         setTTSBackend(service.getBackend());
 
-        // Set up continuous preloading - extend queue as items complete
-        service.setOnPreloadComplete((sentenceId, cacheSize) => {
-          const chapter = useNavigationStore.getState().getCurrentChapter();
-          if (!chapter) return;
+        // Start preloading Parakeet ASR model in background (non-blocking)
+        // This ensures ASR is ready when we have enough buffer for timestamp refinement
+        service.preloadParakeet();
 
-          // Only extend if still playing
-          const playbackState = usePlaybackStore.getState();
-          if (!playbackState.isPlaying) return;
-
-          // Extend queue starting from current position + what we have cached
-          const navState = useNavigationStore.getState();
-          const startFrom = navState.currentSentenceIndex + cacheSize + 1;
-          if (startFrom < chapter.sentences.length) {
-            service.extendPreloadQueue(chapter.sentences, startFrom);
-          }
-        });
+        // Note: preloadFullChapter() queues the entire chapter at once,
+        // so continuous extension via onItemComplete is no longer needed.
+        // Preloading continues even when paused.
 
         // Register stable event handler
         service.addEventListener((event) => {
@@ -218,7 +209,7 @@ export function useAudioPlayback() {
         // Already playing/preparing this sentence (skipToSentence already started it)
         // This prevents duplicate playback when clicking a sentence triggers both
         // skipToSentence AND this effect via state changes
-        service.preloadSentences(chapter.sentences, currentSentenceIndex + 1);
+        service.preloadFullChapter(chapter.sentences, currentSentenceIndex + 1);
         return;
       } else {
         // New sentence (auto-advance from sentenceEnd or initial play) - start fresh
@@ -235,8 +226,8 @@ export function useAudioPlayback() {
         });
       }
 
-      // Preload upcoming sentences
-      service.preloadSentences(chapter.sentences, currentSentenceIndex + 1);
+      // Preload entire chapter from current position
+      service.preloadFullChapter(chapter.sentences, currentSentenceIndex + 1);
     } else {
       // Pause if currently playing
       if (service.isPlaying()) {
@@ -306,8 +297,8 @@ export function useAudioPlayback() {
 
     const chapter = currentBook.chapters[currentChapterIndex];
     if (chapter) {
-      // Preload first few sentences of new chapter
-      service.preloadSentences(chapter.sentences, 0);
+      // Preload entire chapter
+      service.preloadFullChapter(chapter.sentences, 0);
     }
   }, [currentChapterIndex, currentBook, clearHighlight, clearSentenceStates, endSession]);
 
@@ -400,8 +391,8 @@ export function useAudioPlayback() {
         setIsPlaying(true);
       }
 
-      // Preload upcoming sentences
-      service.preloadSentences(chapter.sentences, index + 1);
+      // Preload entire chapter from current position
+      service.preloadFullChapter(chapter.sentences, index + 1);
     } else {
       // No service ready, just ensure playing state for when it loads
       setIsPlaying(true);

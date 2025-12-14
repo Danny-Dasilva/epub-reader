@@ -65,10 +65,16 @@ export default function ReaderPage() {
   // Navigation store
   const currentBook = useNavigationStore(state => state.currentBook);
   const setCurrentBook = useNavigationStore(state => state.setCurrentBook);
+  const setChapter = useNavigationStore(state => state.setChapter);
+  const setSentenceIndex = useNavigationStore(state => state.setSentenceIndex);
   const currentChapterIndex = useNavigationStore(state => state.currentChapterIndex);
   const currentSentenceIndex = useNavigationStore(state => state.currentSentenceIndex);
   const nextSentence = useNavigationStore(state => state.nextSentence);
   const prevSentence = useNavigationStore(state => state.prevSentence);
+
+  // Reading progress store (persisted)
+  const getProgress = useReadingProgressStore(state => state.getProgress);
+  const saveProgress = useReadingProgressStore(state => state.saveProgress);
 
   // Playback store
   const isPlaying = usePlaybackStore(state => state.isPlaying);
@@ -144,6 +150,20 @@ export default function ReaderPage() {
         setCurrentBook(parsed);
         // Calculate pagination for page numbers
         setPagination(calculatePagination(parsed));
+
+        // Restore saved reading position
+        const savedProgress = getProgress(bookId);
+        if (savedProgress) {
+          // Validate saved position is within bounds
+          if (savedProgress.chapterIndex < parsed.chapters.length) {
+            setChapter(savedProgress.chapterIndex);
+            const chapter = parsed.chapters[savedProgress.chapterIndex];
+            if (savedProgress.sentenceIndex < chapter.sentences.length) {
+              setSentenceIndex(savedProgress.sentenceIndex);
+            }
+          }
+        }
+
         updateLastRead(bookId);
         setLoading(false);
         return;
@@ -154,7 +174,38 @@ export default function ReaderPage() {
     };
 
     loadBook();
-  }, [bookId, router, setCurrentBook, updateLastRead]);
+  }, [bookId, router, setCurrentBook, setChapter, setSentenceIndex, getProgress, updateLastRead]);
+
+  // Save reading progress when position changes
+  useEffect(() => {
+    if (book && currentChapterIndex >= 0 && currentSentenceIndex >= 0) {
+      saveProgress(bookId, currentChapterIndex, currentSentenceIndex);
+    }
+  }, [bookId, book, currentChapterIndex, currentSentenceIndex, saveProgress]);
+
+  // Scroll to and highlight restored position on initial load
+  const hasScrolledToPosition = useRef(false);
+  useEffect(() => {
+    if (!loading && book && !hasScrolledToPosition.current && currentSentenceIndex > 0) {
+      const chapter = book.chapters[currentChapterIndex];
+      if (chapter) {
+        const sentence = chapter.sentences[currentSentenceIndex];
+        if (sentence) {
+          // Highlight the restored sentence
+          setHighlight(sentence.id, null);
+        }
+      }
+      // Small delay to ensure DOM is ready
+      const timer = setTimeout(() => {
+        const element = document.getElementById(`sentence-${currentSentenceIndex}`);
+        if (element) {
+          element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        hasScrolledToPosition.current = true;
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [loading, book, currentChapterIndex, currentSentenceIndex, setHighlight]);
 
   // Get current chapter
   const currentChapter = book?.chapters[currentChapterIndex] ?? null;
