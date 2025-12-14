@@ -128,6 +128,11 @@ export function useAudioPlayback() {
         service.addEventListener((event) => {
           handlePlaybackEventRef.current(event);
         });
+
+        // Register ASR completion callback for live timestamp updates
+        service.onASRComplete((sentenceId, timestamps) => {
+          console.log(`[ASR] Timestamps upgraded for ${sentenceId}:`, timestamps.length, 'words');
+        });
       } catch (error) {
         console.error('Failed to initialize audio service:', error);
         if (mounted) {
@@ -160,7 +165,7 @@ export function useAudioPlayback() {
       switch (event.type) {
         case 'wordChange':
           if (event.sentenceId && event.wordIndex !== undefined) {
-            setHighlight(event.sentenceId, event.wordIndex);
+            setHighlight(event.sentenceId, event.wordIndex, event.timestampSource);
           }
           break;
 
@@ -218,6 +223,9 @@ export function useAudioPlayback() {
       } else {
         // New sentence (auto-advance from sentenceEnd or initial play) - start fresh
         const abortController = startSession(sentence.id, currentChapterIndex);
+
+        // Update ASR tracking position for progressive timestamp refinement
+        service.setCurrentPlayingIndex(currentSentenceIndex, chapter.sentences);
 
         service.playSentence(sentence, abortController.signal).catch(error => {
           if (error.name !== 'AbortError') {
@@ -377,6 +385,9 @@ export function useAudioPlayback() {
 
     // Start playback if service is ready
     if (service && service.isReady()) {
+      // Update ASR tracking position for progressive timestamp refinement
+      service.setCurrentPlayingIndex(index, chapter.sentences);
+
       service.playSentence(sentence, abortController.signal).catch(error => {
         if (error.name !== 'AbortError') {
           console.error('Failed to play sentence:', error);

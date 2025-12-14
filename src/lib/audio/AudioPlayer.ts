@@ -4,6 +4,7 @@
  */
 
 import { PlaybackEvent, PlaybackEventHandler, SentenceAudio } from './types';
+import { WordTimestamp } from '../asr/types';
 
 export class AudioPlayer {
   private audioContext: AudioContext | null = null;
@@ -17,12 +18,13 @@ export class AudioPlayer {
   private lastWordIndex: number = -1;
   private playbackRate: number = 1.0;
   private volume: number = 1.0;
+  private playInProgress: boolean = false;  // Guard against concurrent play calls
 
   constructor() {
     // AudioContext will be created on first user interaction
   }
 
-  private ensureAudioContext(): AudioContext {
+  private async ensureAudioContext(): Promise<AudioContext> {
     if (!this.audioContext) {
       this.audioContext = new AudioContext();
       this.gainNode = this.audioContext.createGain();
@@ -30,9 +32,9 @@ export class AudioPlayer {
       this.gainNode.gain.value = this.volume;
     }
 
-    // Resume if suspended (browser autoplay policy)
+    // Resume if suspended (browser autoplay policy) - MUST await!
     if (this.audioContext.state === 'suspended') {
-      this.audioContext.resume();
+      await this.audioContext.resume();
     }
 
     return this.audioContext;
@@ -73,45 +75,84 @@ export class AudioPlayer {
   }
 
   async playSentence(sentence: SentenceAudio): Promise<void> {
-    // Stop any current playback
-    this.stopInternal();
+    // Guard against concurrent play calls
+    if (this.playInProgress) {
+      console.warn('playSentence: Already in progress, ignoring call');
+      return;
+    }
 
-    this.currentSentence = sentence;
-    this.lastWordIndex = -1;
+    this.playInProgress = true;
 
-    // Create HTMLAudioElement with blob URL
-    this.currentAudio = new Audio(sentence.blobUrl);
-    this.currentAudio.preservesPitch = true;  // Native browser time-stretching
-    this.currentAudio.playbackRate = this.playbackRate;
-
-    // Connect to Web Audio API for volume control
-    const ctx = this.ensureAudioContext();
-    this.mediaSource = ctx.createMediaElementSource(this.currentAudio);
-    this.mediaSource.connect(this.gainNode!);
-
-    // Handle playback end
-    this.currentAudio.onended = () => {
-      if (this.isPlaying) {
-        this.emit({
-          type: 'sentenceEnd',
-          sentenceId: sentence.sentenceId
-        });
-        this.isPlaying = false;
-        this.stopWordTracking();
-      }
-    };
-
-    // Handle errors
-    this.currentAudio.onerror = () => {
-      console.error('Audio playback error');
-      this.emit({
-        type: 'error',
-        error: new Error('Audio playback failed')
-      });
-    };
-
-    // Start playback
     try {
+      // Stop any current playback
+      this.stopInternal();
+
+      // Validate sentence audio
+      if (!sentence.blobUrl) {
+        console.error('playSentence: No blob URL provided', sentence);
+        this.emit({
+          type: 'error',
+          error: new Error('No audio URL available')
+        });
+        return;
+      }
+
+      this.currentSentence = sentence;
+      this.lastWordIndex = -1;
+
+      // Ensure AudioContext is ready BEFORE creating media source
+      const ctx = await this.ensureAudioContext();
+
+      // Create HTMLAudioElement with blob URL
+      this.currentAudio = new Audio(sentence.blobUrl);
+      this.currentAudio.preservesPitch = true;  // Native browser time-stretching
+      this.currentAudio.playbackRate = this.playbackRate;
+
+      // Connect to Web Audio API for volume control
+      this.mediaSource = ctx.createMediaElementSource(this.currentAudio);
+      this.mediaSource.connect(this.gainNode!);
+
+      // Handle playback end
+      this.currentAudio.onended = () => {
+        if (this.isPlaying) {
+          this.emit({
+            type: 'sentenceEnd',
+            sentenceId: sentence.sentenceId
+          });
+          this.isPlaying = false;
+          this.stopWordTracking();
+        }
+      };
+
+      // Handle errors
+      this.currentAudio.onerror = (e) => {
+        const audio = this.currentAudio;
+        const errorCode = audio?.error?.code;
+        const errorMessage = audio?.error?.message || 'Unknown error';
+
+        // MediaError codes: 1=ABORTED, 2=NETWORK, 3=DECODE, 4=SRC_NOT_SUPPORTED
+        const codeNames: Record<number, string> = {
+          1: 'MEDIA_ERR_ABORTED',
+          2: 'MEDIA_ERR_NETWORK',
+          3: 'MEDIA_ERR_DECODE',
+          4: 'MEDIA_ERR_SRC_NOT_SUPPORTED'
+        };
+
+        console.error('Audio playback error:', {
+          code: errorCode,
+          codeName: errorCode ? codeNames[errorCode] : 'unknown',
+          message: errorMessage,
+          src: audio?.src?.substring(0, 100),
+          event: e
+        });
+
+        this.emit({
+          type: 'error',
+          error: new Error(`Audio playback failed: ${codeNames[errorCode || 0] || errorMessage}`)
+        });
+      };
+
+      // Start playback
       await this.currentAudio.play();
       this.isPlaying = true;
 
@@ -130,6 +171,8 @@ export class AudioPlayer {
         type: 'error',
         error: e instanceof Error ? e : new Error('Playback failed')
       });
+    } finally {
+      this.playInProgress = false;
     }
   }
 
@@ -203,7 +246,8 @@ export class AudioPlayer {
           type: 'wordChange',
           sentenceId: this.currentSentence.sentenceId,
           wordIndex: wordIndex >= 0 ? wordIndex : undefined,
-          currentTime
+          currentTime,
+          timestampSource: this.currentSentence.timestampSource
         });
       }
 
@@ -251,23 +295,35 @@ export class AudioPlayer {
     return this.isPlaying;
   }
 
-  getAudioContext(): AudioContext {
+  async getAudioContext(): Promise<AudioContext> {
     return this.ensureAudioContext();
   }
 
   async decodeAudioData(arrayBuffer: ArrayBuffer): Promise<AudioBuffer> {
-    const ctx = this.ensureAudioContext();
+    const ctx = await this.ensureAudioContext();
     return ctx.decodeAudioData(arrayBuffer);
   }
 
   // Convert Float32Array audio data to AudioBuffer (kept for compatibility)
-  createAudioBuffer(audioData: Float32Array, sampleRate: number): AudioBuffer {
-    const ctx = this.ensureAudioContext();
+  async createAudioBuffer(audioData: Float32Array, sampleRate: number): Promise<AudioBuffer> {
+    const ctx = await this.ensureAudioContext();
     const buffer = ctx.createBuffer(1, audioData.length, sampleRate);
     const channelData = new Float32Array(audioData.length);
     channelData.set(audioData);
     buffer.copyToChannel(channelData, 0);
     return buffer;
+  }
+
+  /**
+   * Update timestamps for the currently playing sentence (for ASR refinement)
+   * The word tracking loop will pick up the new timestamps on the next frame
+   */
+  updateActiveTimestamps(sentenceId: string, timestamps: WordTimestamp[]): void {
+    if (this.currentSentence?.sentenceId === sentenceId) {
+      this.currentSentence.wordTimestamps = timestamps;
+      // Reset lastWordIndex to force re-evaluation with new timestamps
+      this.lastWordIndex = -1;
+    }
   }
 
   dispose(): void {

@@ -3,14 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --webpack",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "postinstall": "bash scripts/download-models.sh",
+    "postinstall": "bash scripts/download-models.sh && cp node_modules/coi-serviceworker/coi-serviceworker.js public/",
     "download-models": "bash scripts/download-models.sh"
   },
   "dependencies": {
+    "coi-serviceworker": "^0.1.7",
     "epubjs": "^0.3.93",
     "next": "16.0.4",
     "onnxruntime-web": "^1.23.2",

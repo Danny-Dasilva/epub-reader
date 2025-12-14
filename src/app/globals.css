@@ -77,6 +77,7 @@ body {
   --border: var(--color-sepia);
   --highlight-sentence: var(--color-highlight);
   --highlight-word: var(--color-gold-light);
+  --highlight-word-asr: #6ee7b7;  /* Teal/emerald for ASR-accurate */
 }
 
 [data-theme="light"] {
@@ -89,6 +90,7 @@ body {
   --border: #e0e0e0;
   --highlight-sentence: #e8f4fd;
   --highlight-word: #bae6fd;
+  --highlight-word-asr: #6ee7b7;  /* Teal/emerald for ASR-accurate */
 }
 
 [data-theme="dark"] {
@@ -101,6 +103,7 @@ body {
   --border: var(--color-night-border);
   --highlight-sentence: rgba(168, 85, 247, 0.15);
   --highlight-word: rgba(168, 85, 247, 0.5);
+  --highlight-word-asr: rgba(52, 211, 153, 0.7);  /* Emerald for ASR-accurate */
   --accent: var(--color-accent-purple);
   --accent-glow: var(--color-accent-purple-glow);
 }
@@ -241,6 +244,25 @@ body {
 
 .word.speaking {
   animation: wordHighlight 0.15s ease-out forwards;
+}
+
+/* ASR-accurate word highlighting - teal/emerald color indicates precise timestamps */
+.sentence.active .word.speaking.asr-accurate {
+  background-color: var(--highlight-word-asr);
+  outline-color: var(--highlight-word-asr);
+}
+
+.word.speaking.asr-accurate {
+  animation: wordHighlightASR 0.15s ease-out forwards;
+}
+
+@keyframes wordHighlightASR {
+  0% {
+    background-color: transparent;
+  }
+  100% {
+    background-color: var(--highlight-word-asr);
+  }
 }
 
 /* Page Texture Overlay */
@@ -546,7 +568,8 @@ body {
 .timeline-track.segmented {
   display: flex;
   gap: 2px;
-  height: 8px;
+  height: 12px;
+  /* Increased height */
   background: transparent;
   border-radius: 4px;
   /* Rounded container */
@@ -642,13 +665,52 @@ body {
   color: var(--border);
 }
 
-.timeline-time {
+.tooltip-separator {
+  color: var(--border);
+}
+
+/* Timeline Stats */
+.timeline-stats {
   display: flex;
   justify-content: space-between;
-  margin-top: 0.5rem;
+  margin-top: 0.75rem;
   font-size: 0.75rem;
+  font-weight: 500;
   color: var(--text-muted);
+}
+
+.stat-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stat-label {
+  text-transform: uppercase;
+  font-size: 0.65rem;
+  letter-spacing: 0.05em;
+  opacity: 0.8;
+}
+
+.stat-value {
   font-variant-numeric: tabular-nums;
+}
+
+.stat-item.played .stat-value {
+  color: var(--accent, var(--color-accent-purple));
+}
+
+.stat-item.ready .stat-value {
+  color: var(--color-accent-yellow);
+  /* Ensure readability against light backgrounds if needed, 
+     but yellow usually needs a darker shade for text. 
+     Using a darker gold for text visibility. */
+  color: #b45309;
+  /* amber-700 */
+}
+
+[data-theme="dark"] .stat-item.ready .stat-value {
+  color: var(--color-accent-yellow);
 }
 
 /* Playback Controls - Mobile Optimized */
@@ -873,6 +935,37 @@ body {
   color: var(--text);
 }
 
+/* Toggle Switch */
+.toggle-switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  background: var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.toggle-switch.active {
+  background: var(--accent, var(--color-accent-purple));
+}
+
+.toggle-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  background: white;
+  border-radius: 50%;
+  transition: transform 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.toggle-switch.active .toggle-switch-thumb {
+  transform: translateX(20px);
+}
+
 /* Volume Slider */
 .volume-slider {
   flex: 1;
@@ -1073,4 +1166,226 @@ input[type="range"] {
 .playback-btn.primary:disabled {
   opacity: 0.5;
   animation: pulseGlow 2s ease-in-out infinite;
+}
+
+/* ============================================
+   Search Panel
+   ============================================ */
+
+.search-panel {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  z-index: 50;
+  animation: slideDown 0.2s ease-out;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+[data-theme="dark"] .search-panel {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.search-input-container {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.search-input-container svg {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 1rem;
+  color: var(--text);
+}
+
+.search-input::placeholder {
+  color: var(--text-muted);
+}
+
+.search-clear-btn,
+.search-close-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.search-clear-btn:hover,
+.search-close-btn:hover {
+  background: var(--highlight-sentence);
+  color: var(--text);
+}
+
+.search-results {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.search-status {
+  padding: 1rem;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.search-count {
+  padding: 0.5rem 1rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--border);
+}
+
+.search-results-list {
+  padding: 0.5rem 0;
+}
+
+.search-result {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  width: 100%;
+  padding: 0.75rem 1rem;
+  text-align: left;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.search-result:hover {
+  background: var(--highlight-sentence);
+}
+
+.search-result-chapter {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--accent, var(--color-accent-purple));
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.search-result-location {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.search-result-text {
+  font-size: 0.875rem;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.search-result-context {
+  color: var(--text-muted);
+}
+
+.search-result-match {
+  background: var(--highlight-word);
+  color: var(--text);
+  padding: 0.1em 0.2em;
+  border-radius: 2px;
+}
+
+[data-theme="dark"] .search-result-match {
+  background: rgba(168, 85, 247, 0.3);
+}
+
+/* ============================================
+   Page Indicator - Literary Marginalia
+   ============================================ */
+
+.page-indicator {
+  position: fixed;
+  left: clamp(0.5rem, 3vw, 2rem);
+  top: 50%;
+  transform: translateY(-50%);
+  font-family: var(--font-serif);
+  font-size: 0.8rem;
+  font-weight: 400;
+  color: var(--text-muted);
+  opacity: 0.35;
+  letter-spacing: 0.02em;
+  z-index: 10;
+  pointer-events: none;
+  transition: opacity 0.4s ease;
+  user-select: none;
+}
+
+.page-indicator-number {
+  display: block;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Subtle pulse on page change */
+.page-indicator.changing {
+  opacity: 0.65;
+}
+
+/* Sepia theme - warmer, more subtle */
+[data-theme="sepia"] .page-indicator {
+  color: var(--color-sepia-dark);
+  opacity: 0.3;
+}
+
+[data-theme="sepia"] .page-indicator.changing {
+  opacity: 0.55;
+}
+
+/* Light theme adjustments */
+[data-theme="light"] .page-indicator {
+  opacity: 0.25;
+}
+
+[data-theme="light"] .page-indicator.changing {
+  opacity: 0.5;
+}
+
+/* Hide on narrow screens where margin doesn't exist */
+@media (max-width: 900px) {
+  .page-indicator {
+    display: none;
+  }
+}
+
+/* Closer to edge on medium screens */
+@media (max-width: 1100px) and (min-width: 901px) {
+  .page-indicator {
+    left: 0.5rem;
+    opacity: 0.25;
+  }
+
+  .page-indicator.changing {
+    opacity: 0.5;
+  }
 }

@@ -174,8 +174,19 @@ export const Timeline = memo(function Timeline({
         </div>
       )}
 
-      <div className="timeline-time">
-        <span>{Math.round(((currentIndex + 1) / totalSentences) * 100)}% Complete</span>
+      <div className="timeline-stats">
+        <div className="stat-item played">
+          <span className="stat-label">Played</span>
+          <span className="stat-value">
+            {preloadStats.playedCount}/{totalSentences} ({Math.round(preloadStats.playedPercentage)}%)
+          </span>
+        </div>
+        <div className="stat-item ready">
+          <span className="stat-label">Processed</span>
+          <span className="stat-value">
+            {preloadStats.preloadedCount}/{totalSentences} ({Math.round(preloadStats.preloadPercentage)}%)
+          </span>
+        </div>
       </div>
     </div>
   );

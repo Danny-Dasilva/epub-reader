@@ -13,8 +13,9 @@ import { Sentence } from '../epub/types';
 import { TTSWorkerManager, TTSSynthesisResult } from '../tts/TTSWorkerManager';
 import { SentenceAudio } from './types';
 import { WordTimestamp } from '../asr/types';
+import { ParakeetASR, getSharedParakeetASR } from '../asr/parakeet';
 import { SentenceAudioState } from '@/store/sentenceStateStore';
-import { float32ToWav, createAudioBlobUrl } from '../tts/audioUtils';
+import { float32ToWav, createAudioBlobUrl, resampleAudio } from '../tts/audioUtils';
 
 export interface PreloadConfig {
   preloadCount: number;      // Max number of sentences to preload ahead (default: 4)
@@ -51,6 +52,14 @@ export class PreloadQueueManager {
 
   // LRU cache tracking - most recently used at end
   private accessOrder: string[] = [];
+
+  // ASR refinement for accurate word timestamps
+  private asrQueue: string[] = [];              // Sentence IDs pending ASR
+  private asrProcessing: string | null = null;  // Currently processing ASR
+  private currentPlayingIndex: number = -1;     // Track playback position
+  private currentSentences: Sentence[] = [];    // Current sentence list
+  private parakeet: ParakeetASR | null = null;  // Lazy-loaded ASR instance
+  private asrCompleteCallback: ((sentenceId: string, timestamps: WordTimestamp[]) => void) | null = null;
 
   constructor(ttsManager: TTSWorkerManager, config: Partial<PreloadConfig> = {}) {
     this.ttsManager = ttsManager;
@@ -89,6 +98,13 @@ export class PreloadQueueManager {
    */
   setAudioContext(context: AudioContext): void {
     this.audioContext = context;
+  }
+
+  /**
+   * Check if AudioContext is set (for lazy initialization)
+   */
+  hasAudioContext(): boolean {
+    return this.audioContext !== null;
   }
 
   /**
@@ -302,7 +318,8 @@ export class PreloadQueueManager {
       audioBuffer,
       blobUrl,
       wordTimestamps,
-      duration: result.duration
+      duration: result.duration,
+      timestampSource: 'estimated' as const
     };
   }
 
@@ -552,14 +569,212 @@ export class PreloadQueueManager {
     };
   }
 
+  // ============================================
+  // ASR Refinement Methods
+  // ============================================
+
+  /**
+   * Set callback for when ASR completes and upgrades timestamps
+   */
+  onASRComplete(callback: (sentenceId: string, timestamps: WordTimestamp[]) => void): void {
+    this.asrCompleteCallback = callback;
+  }
+
+  /**
+   * Update the current playing position for ASR scheduling
+   * Called by AudioSyncService when playback advances
+   */
+  setCurrentPlayingIndex(index: number, sentences: Sentence[]): void {
+    console.log(`[ASR] setCurrentPlayingIndex: index=${index}, sentences=${sentences.length}`);
+    this.currentPlayingIndex = index;
+    this.currentSentences = sentences;
+
+    // Queue current and upcoming sentences for ASR refinement
+    this.maybeQueueForASR();
+  }
+
+  /**
+   * Check if we have enough buffer to run ASR (2+ sentences ahead)
+   */
+  private canRunASR(): boolean {
+    if (this.currentPlayingIndex < 0 || this.currentSentences.length === 0) {
+      console.log('[ASR] canRunASR: false (no position or sentences)');
+      return false;
+    }
+
+    let readyAhead = 0;
+    for (let i = this.currentPlayingIndex + 1; i < this.currentSentences.length; i++) {
+      if (this.cache.has(this.currentSentences[i].id)) {
+        readyAhead++;
+        if (readyAhead >= 2) {
+          console.log(`[ASR] canRunASR: true (readyAhead=${readyAhead})`);
+          return true;
+        }
+      } else {
+        break; // Gap in cache, stop counting
+      }
+    }
+    console.log(`[ASR] canRunASR: false (readyAhead=${readyAhead}, need 2+)`);
+    return false;
+  }
+
+  /**
+   * Queue sentences for ASR refinement when we're ahead enough
+   */
+  private maybeQueueForASR(): void {
+    console.log('[ASR] maybeQueueForASR called');
+    if (!this.canRunASR()) {
+      console.log('[ASR] Skipping ASR - not enough buffer');
+      return;
+    }
+    console.log('[ASR] Buffer sufficient, queueing sentences for ASR refinement');
+
+    // Priority 1: Currently playing sentence (if still using estimated)
+    const currentSentence = this.currentSentences[this.currentPlayingIndex];
+    if (currentSentence) {
+      const currentAudio = this.cache.get(currentSentence.id);
+      if (currentAudio?.timestampSource === 'estimated' &&
+          !this.asrQueue.includes(currentSentence.id) &&
+          this.asrProcessing !== currentSentence.id) {
+        this.asrQueue.unshift(currentSentence.id); // High priority
+      }
+    }
+
+    // Priority 2: Next sentences in order
+    for (let i = this.currentPlayingIndex + 1; i < this.currentSentences.length && i <= this.currentPlayingIndex + 3; i++) {
+      const sentence = this.currentSentences[i];
+      const audio = this.cache.get(sentence.id);
+      if (audio?.timestampSource === 'estimated' &&
+          !this.asrQueue.includes(sentence.id) &&
+          this.asrProcessing !== sentence.id) {
+        this.asrQueue.push(sentence.id);
+      }
+    }
+
+    // Trigger processing if not already running
+    if (!this.asrProcessing && this.asrQueue.length > 0) {
+      this.processASRQueue();
+    }
+  }
+
+  /**
+   * Process the ASR queue in background
+   */
+  private async processASRQueue(): Promise<void> {
+    console.log(`[ASR] processASRQueue: queue=${this.asrQueue.length}, processing=${this.asrProcessing}`);
+
+    if (this.asrProcessing || this.asrQueue.length === 0) {
+      console.log('[ASR] processASRQueue: skipping (already processing or empty queue)');
+      return;
+    }
+
+    // Check if we still have enough buffer
+    if (!this.canRunASR()) {
+      console.log('[ASR] processASRQueue: skipping (buffer insufficient)');
+      return;
+    }
+
+    const sentenceId = this.asrQueue.shift();
+    if (!sentenceId) return;
+
+    const audio = this.cache.get(sentenceId);
+    if (!audio || audio.timestampSource === 'asr') {
+      console.log(`[ASR] processASRQueue: skipping ${sentenceId} (not cached or already ASR)`);
+      // Already processed or not in cache, try next
+      this.processASRQueue();
+      return;
+    }
+
+    console.log(`[ASR] Processing sentence: ${sentenceId}`);
+    this.asrProcessing = sentenceId;
+
+    try {
+      // Ensure Parakeet is ready
+      const parakeet = await this.ensureParakeetReady();
+
+      // Extract audio data and resample for ASR (44.1kHz → 16kHz)
+      const audioData = audio.audioBuffer.getChannelData(0);
+      const audio16k = resampleAudio(audioData, this.sampleRate, 16000);
+
+      // Run ASR
+      const result = await parakeet.transcribe(audio16k, 16000);
+
+      // Upgrade timestamps in cache
+      if (result.words.length > 0) {
+        this.upgradeTimestamps(sentenceId, result.words);
+        console.log(`[ASR] Upgraded timestamps for sentence ${sentenceId} (${result.words.length} words)`);
+      }
+
+    } catch (error) {
+      console.warn(`[ASR] Failed for sentence ${sentenceId}:`, error);
+      // Keep estimated timings, don't retry
+    } finally {
+      this.asrProcessing = null;
+      // Continue processing queue
+      if (this.asrQueue.length > 0 && this.canRunASR()) {
+        this.processASRQueue();
+      }
+    }
+  }
+
+  /**
+   * Lazily initialize Parakeet ASR
+   */
+  private async ensureParakeetReady(): Promise<ParakeetASR> {
+    if (!this.parakeet) {
+      this.parakeet = getSharedParakeetASR();
+      console.log('[ASR] Initializing Parakeet...');
+      await this.parakeet.initialize();
+      console.log('[ASR] Parakeet ready');
+    }
+    return this.parakeet;
+  }
+
+  /**
+   * Start preloading Parakeet ASR in background (non-blocking)
+   * Call this early (e.g., after TTS init) to have ASR ready when needed
+   */
+  preloadParakeet(): void {
+    // Don't block - just start the initialization
+    this.ensureParakeetReady().catch((error) => {
+      console.warn('[ASR] Background preload failed:', error);
+    });
+  }
+
+  /**
+   * Upgrade timestamps for a cached sentence from estimated to ASR
+   */
+  private upgradeTimestamps(sentenceId: string, timestamps: WordTimestamp[]): void {
+    const audio = this.cache.get(sentenceId);
+    if (!audio) return;
+
+    audio.wordTimestamps = timestamps;
+    audio.timestampSource = 'asr';
+
+    // Notify callback (for live updates during playback)
+    this.asrCompleteCallback?.(sentenceId, timestamps);
+  }
+
+  /**
+   * Clear ASR queue (e.g., when seeking)
+   */
+  clearASRQueue(): void {
+    this.asrQueue = [];
+    // Note: asrProcessing will complete on its own
+  }
+
   /**
    * Dispose of resources
    */
   dispose(): void {
     this.cancelSession();
+    this.clearASRQueue();
     this.revokeAllBlobs();
     this.cache.clear();
     this.accessOrder = [];
     this.stateCallback = null;
+    this.asrCompleteCallback = null;
+    this.currentPlayingIndex = -1;
+    this.currentSentences = [];
   }
 }

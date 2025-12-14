@@ -2,7 +2,7 @@
 
 import { useCallback } from 'react';
 import { Sentence } from '@/lib/epub';
-import { SentenceStateMap } from '@/store/sentenceStateStore';
+import { SentenceStateMap, TimestampSource } from '@/store/sentenceStateStore';
 import { SentenceSpan } from './SentenceSpan';
 
 interface VirtualizedSentenceListProps {
@@ -11,6 +11,7 @@ interface VirtualizedSentenceListProps {
   currentIndex: number;
   highlightedSentenceId: string | null;
   highlightedWordIndex: number | null;
+  highlightTimestampSource: TimestampSource | null;
   onSentenceClick: (index: number) => void;
   isPlaying: boolean;
 }
@@ -26,6 +27,7 @@ export function VirtualizedSentenceList({
   sentenceStates,
   highlightedSentenceId,
   highlightedWordIndex,
+  highlightTimestampSource,
   onSentenceClick,
 }: VirtualizedSentenceListProps) {
   const handleClick = useCallback((index: number) => {
@@ -46,6 +48,7 @@ export function VirtualizedSentenceList({
             state={state}
             isHighlighted={isActive}
             highlightedWordIndex={isActive ? highlightedWordIndex : null}
+            timestampSource={isActive ? highlightTimestampSource : null}
             onClick={() => handleClick(index)}
           />
         );
