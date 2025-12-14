@@ -24,6 +24,8 @@ export interface PreloadConfig {
   totalSteps: number;        // TTS denoising steps
   maxCacheSize: number;      // Max number of cached sentences (default: 20)
   maxConcurrentTTS: number;  // Max concurrent TTS synthesis operations (default: 2)
+  batchCharLimit: number;    // Max combined chars for batching short sentences (default: 600)
+  singleSentenceLimit: number; // Max chars for a sentence to be batched (default: 300)
   onItemComplete?: (sentenceId: string, cacheSize: number) => void;  // Callback when item finishes preloading
 }
 
@@ -35,6 +37,14 @@ interface QueuedRequest {
   sentence: Sentence;
   priority: number;          // 0 = current, 1 = next, etc.
   abortController: AbortController;
+}
+
+interface BatchedRequest {
+  sentences: Sentence[];           // Original sentences in batch
+  combinedText: string;            // Concatenated text
+  charBoundaries: number[];        // Character positions where each sentence ends
+  abortController: AbortController;
+  priority: number;
 }
 
 export class PreloadQueueManager {
@@ -65,13 +75,22 @@ export class PreloadQueueManager {
 
   constructor(ttsManager: TTSWorkerManager, config: Partial<PreloadConfig> = {}) {
     this.ttsManager = ttsManager;
+
+    // Adaptive cache size based on device memory
+    // navigator.deviceMemory returns RAM in GB (4, 8, etc.) - undefined on some browsers
+    // Use smaller cache on low-memory devices to reduce memory pressure
+    const deviceMemory = typeof navigator !== 'undefined' ? (navigator as Navigator & { deviceMemory?: number }).deviceMemory : undefined;
+    const adaptiveCacheSize = deviceMemory && deviceMemory < 4 ? 10 : 20;
+
     this.config = {
       preloadCount: 4,
       preloadCharLimit: 800,
       speed: 1.0,
       totalSteps: 5,
-      maxCacheSize: 20,
-      maxConcurrentTTS: 2,  // Process 2 sentences concurrently
+      maxCacheSize: adaptiveCacheSize,
+      maxConcurrentTTS: 2,      // Process 2 batches concurrently
+      batchCharLimit: 600,      // Batch short sentences up to 600 chars total
+      singleSentenceLimit: 300, // Only batch sentences shorter than 300 chars
       ...config
     };
   }
@@ -152,12 +171,12 @@ export class PreloadQueueManager {
       abortController: new AbortController()
     }));
 
-    // Link abort controllers to session
+    // Link abort controllers to session (use once: true to prevent listener accumulation)
     this.sessionController.signal.addEventListener('abort', () => {
       this.queue.forEach(req => req.abortController.abort());
       // Abort all active concurrent requests
       this.activeRequests.forEach(req => req.abortController.abort());
-    });
+    }, { once: true });
 
     // Mark all as preloading
     toPreload.forEach(sentence => {
@@ -182,6 +201,7 @@ export class PreloadQueueManager {
 
   /**
    * Process items in the queue concurrently (up to maxConcurrentTTS)
+   * Batches consecutive short sentences together for efficiency
    */
   private processQueue(): void {
     // Continue spawning while under concurrency limit and queue has items
@@ -189,72 +209,236 @@ export class PreloadQueueManager {
       this.activeRequests.size < this.config.maxConcurrentTTS &&
       this.queue.length > 0
     ) {
-      // Sort by priority and get the highest priority item
+      // Sort by priority
       this.queue.sort((a, b) => a.priority - b.priority);
-      const request = this.queue.shift();
 
-      if (!request) break;
+      // Try to batch consecutive short sentences
+      const batch = this.collectBatch();
+      if (!batch) break;
 
-      // Skip if aborted
-      if (request.abortController.signal.aborted) continue;
-
-      // Track as active
-      this.activeRequests.set(request.sentence.id, request);
-
-      // Process async (fire-and-forget - allows concurrency)
-      this.processSingleRequest(request);
+      if (batch.sentences.length === 1) {
+        // Single sentence - process normally
+        this.processSingleSentence(batch.sentences[0], batch.abortController);
+      } else {
+        // Multiple sentences - process as batch
+        console.log(`[Preload] Batched ${batch.sentences.length} sentences (${batch.combinedText.length} chars)`);
+        this.processBatchedRequest(batch);
+      }
     }
   }
 
   /**
-   * Process a single TTS request
+   * Collect consecutive short sentences into a batch
    */
-  private async processSingleRequest(request: QueuedRequest): Promise<void> {
+  private collectBatch(): BatchedRequest | null {
+    if (this.queue.length === 0) return null;
+
+    const batch: Sentence[] = [];
+    const abortControllers: AbortController[] = [];
+    let totalChars = 0;
+    let priority = Infinity;
+
+    // Collect consecutive short sentences
+    while (this.queue.length > 0) {
+      const next = this.queue[0];
+      const textLen = next.sentence.text.length;
+
+      // Stop if sentence is too long to batch
+      if (textLen > this.config.singleSentenceLimit) {
+        if (batch.length === 0) {
+          // First sentence is long - just return it alone
+          this.queue.shift();
+          this.activeRequests.set(next.sentence.id, next);
+          return {
+            sentences: [next.sentence],
+            combinedText: next.sentence.text,
+            charBoundaries: [textLen],
+            abortController: next.abortController,
+            priority: next.priority
+          };
+        }
+        break; // Stop batching, long sentence will be next batch
+      }
+
+      // Stop if adding would exceed batch limit
+      if (totalChars + textLen > this.config.batchCharLimit && batch.length > 0) {
+        break;
+      }
+
+      // Add to batch
+      const request = this.queue.shift()!;
+      batch.push(request.sentence);
+      abortControllers.push(request.abortController);
+      totalChars += textLen;
+      priority = Math.min(priority, request.priority);
+
+      // Track in activeRequests
+      this.activeRequests.set(request.sentence.id, request);
+    }
+
+    if (batch.length === 0) return null;
+
+    // Build combined text and boundaries
+    let combinedText = '';
+    const charBoundaries: number[] = [];
+
+    batch.forEach((sentence, i) => {
+      if (i > 0) combinedText += ' ';  // Space between sentences
+      combinedText += sentence.text;
+      charBoundaries.push(combinedText.length);
+    });
+
+    // Create linked abort controller (use once: true to prevent listener accumulation)
+    const batchAbort = new AbortController();
+    abortControllers.forEach(ac => {
+      ac.signal.addEventListener('abort', () => batchAbort.abort(), { once: true });
+    });
+
+    return { sentences: batch, combinedText, charBoundaries, abortController: batchAbort, priority };
+  }
+
+  /**
+   * Process a single sentence (non-batched)
+   */
+  private async processSingleSentence(sentence: Sentence, abortController: AbortController): Promise<void> {
     try {
       // Check if cancelled before starting
-      if (request.abortController.signal.aborted) {
+      if (abortController.signal.aborted) {
         return;
       }
 
       // Synthesize audio
       const result = await this.ttsManager.synthesize(
-        request.sentence.text,
+        sentence.text,
         {
           speed: this.config.speed,
           totalSteps: this.config.totalSteps
         },
-        request.abortController.signal
+        abortController.signal
       );
 
       // Evict old entries if cache is full
       this.evictIfNeeded();
 
       // Create SentenceAudio
-      const audio = await this.createSentenceAudio(request.sentence, result);
+      const audio = await this.createSentenceAudio(sentence, result);
 
       // Cache the result and track access
-      this.cache.set(request.sentence.id, audio);
-      this.touchAccess(request.sentence.id);
+      this.cache.set(sentence.id, audio);
+      this.touchAccess(sentence.id);
 
       // Update state to ready
-      this.stateCallback?.(request.sentence.id, 'ready');
+      this.stateCallback?.(sentence.id, 'ready');
 
       // Notify that an item completed (for continuous queue extension)
-      this.config.onItemComplete?.(request.sentence.id, this.cache.size);
+      this.config.onItemComplete?.(sentence.id, this.cache.size);
 
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
         // Cancelled - don't report as error
       } else {
-        console.error('Preload failed for sentence:', request.sentence.id, error);
-        this.stateCallback?.(request.sentence.id, 'error');
+        console.error('Preload failed for sentence:', sentence.id, error);
+        this.stateCallback?.(sentence.id, 'error');
       }
     } finally {
       // Remove from active requests
-      this.activeRequests.delete(request.sentence.id);
+      this.activeRequests.delete(sentence.id);
       // Continue processing queue to fill available slot
       this.processQueue();
     }
+  }
+
+  /**
+   * Process a batch of sentences in a single TTS call
+   */
+  private async processBatchedRequest(batch: BatchedRequest): Promise<void> {
+    try {
+      if (batch.abortController.signal.aborted) return;
+
+      // Synthesize combined text
+      const result = await this.ttsManager.synthesize(
+        batch.combinedText,
+        { speed: this.config.speed, totalSteps: this.config.totalSteps },
+        batch.abortController.signal
+      );
+
+      // Split audio and create SentenceAudio for each
+      const audioObjects = await this.splitBatchedAudio(batch, result);
+
+      // Cache each sentence's audio
+      for (const audio of audioObjects) {
+        this.evictIfNeeded();
+        this.cache.set(audio.sentenceId, audio);
+        this.touchAccess(audio.sentenceId);
+        this.stateCallback?.(audio.sentenceId, 'ready');
+        this.config.onItemComplete?.(audio.sentenceId, this.cache.size);
+      }
+
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) {
+        console.error('Batch preload failed:', error);
+        batch.sentences.forEach(s => this.stateCallback?.(s.id, 'error'));
+      }
+    } finally {
+      batch.sentences.forEach(s => this.activeRequests.delete(s.id));
+      this.processQueue();
+    }
+  }
+
+  /**
+   * Split batched audio into individual SentenceAudio objects
+   */
+  private async splitBatchedAudio(
+    batch: BatchedRequest,
+    result: TTSSynthesisResult
+  ): Promise<SentenceAudio[]> {
+    const { sentences, charBoundaries } = batch;
+    const totalChars = charBoundaries[charBoundaries.length - 1];
+    const totalSamples = result.wav.length;
+    const totalDuration = result.duration;
+
+    const audioObjects: SentenceAudio[] = [];
+    let prevCharEnd = 0;
+    let prevSampleEnd = 0;
+    let prevTimeEnd = 0;
+
+    for (let i = 0; i < sentences.length; i++) {
+      const sentence = sentences[i];
+      const charEnd = charBoundaries[i];
+      const charRatio = (charEnd - prevCharEnd) / totalChars;
+
+      // Calculate sample and time boundaries (character-weighted)
+      const sampleEnd = Math.floor(prevSampleEnd + charRatio * totalSamples);
+      const timeEnd = prevTimeEnd + charRatio * totalDuration;
+
+      // Slice audio for this sentence
+      const sentenceWav = result.wav.slice(prevSampleEnd, sampleEnd);
+      const sentenceDuration = timeEnd - prevTimeEnd;
+
+      // Create blob URL and AudioBuffer
+      const wavBuffer = float32ToWav(sentenceWav, result.sampleRate);
+      const blobUrl = this.createAndTrackBlobUrl(sentence.id, wavBuffer);
+      const audioBuffer = await this.createAudioBuffer(sentenceWav, result.sampleRate);
+
+      // Estimate word timings for this sentence
+      const wordTimestamps = this.estimateWordTimings(sentence.text, sentenceDuration);
+
+      audioObjects.push({
+        sentenceId: sentence.id,
+        text: sentence.text,
+        audioBuffer,
+        blobUrl,
+        wordTimestamps,
+        duration: sentenceDuration,
+        timestampSource: 'estimated'
+      });
+
+      prevCharEnd = charEnd;
+      prevSampleEnd = sampleEnd;
+      prevTimeEnd = timeEnd;
+    }
+
+    return audioObjects;
   }
 
   /**
@@ -518,10 +702,10 @@ export class PreloadQueueManager {
     toAdd.forEach((sentence, index) => {
       const abortController = new AbortController();
 
-      // Link to session abort
+      // Link to session abort (use once: true to prevent listener accumulation)
       this.sessionController!.signal.addEventListener('abort', () => {
         abortController.abort();
-      });
+      }, { once: true });
 
       this.queue.push({
         sentence,
@@ -565,12 +749,12 @@ export class PreloadQueueManager {
       abortController: new AbortController()
     }));
 
-    // Link abort controllers to session
+    // Link abort controllers to session (use once: true to prevent listener accumulation)
     this.sessionController.signal.addEventListener('abort', () => {
       this.queue.forEach(req => req.abortController.abort());
       // Abort all active concurrent requests
       this.activeRequests.forEach(req => req.abortController.abort());
-    });
+    }, { once: true });
 
     // Mark all as preloading
     toPreload.forEach(sentence => {
@@ -650,6 +834,14 @@ export class PreloadQueueManager {
    */
   setCurrentPlayingIndex(index: number, sentences: Sentence[]): void {
     console.log(`[ASR] setCurrentPlayingIndex: index=${index}, sentences=${sentences.length}`);
+
+    // Clear ASR queue when switching to a different chapter (sentences array changed)
+    // This prevents holding references to old chapter's sentences
+    if (this.currentSentences !== sentences && this.currentSentences.length > 0) {
+      console.log('[ASR] Chapter changed, clearing ASR queue to release old sentence references');
+      this.clearASRQueue();
+    }
+
     this.currentPlayingIndex = index;
     this.currentSentences = sentences;
 
@@ -883,5 +1075,12 @@ export class PreloadQueueManager {
     this.asrCompleteCallback = null;
     this.currentPlayingIndex = -1;
     this.currentSentences = [];
+
+    // Dispose Parakeet ASR model to free ONNX session memory
+    if (this.parakeet) {
+      this.parakeet.dispose();
+      this.parakeet = null;
+    }
+    this.parakeetInitPromise = null;
   }
 }

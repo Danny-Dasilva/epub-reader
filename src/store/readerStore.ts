@@ -4,12 +4,7 @@ import { ParsedBook, Chapter, Sentence } from '@/lib/epub';
 
 export type Theme = 'light' | 'dark' | 'sepia';
 
-// Sentence audio state for visual feedback
-export type SentenceAudioState = 'pending' | 'preloading' | 'ready' | 'playing' | 'played' | 'error';
-
-export interface SentenceStateMap {
-  [sentenceId: string]: SentenceAudioState;
-}
+// Note: Sentence audio state management moved to sentenceStateStore.ts to avoid duplication
 
 interface ReaderState {
   // Current book data (not persisted - loaded fresh each time)
@@ -35,13 +30,6 @@ interface ReaderState {
   ttsBackend: 'webgpu' | 'wasm' | null;
   currentVoice: string;
 
-  // Highlighting
-  highlightedSentenceId: string | null;
-  highlightedWordIndex: number | null;
-
-  // Sentence audio states (for visual feedback)
-  sentenceStates: SentenceStateMap;
-
   // Actions
   setCurrentBook: (book: ParsedBook | null) => void;
   setChapter: (index: number) => void;
@@ -65,13 +53,6 @@ interface ReaderState {
   setTTSLoading: (loading: boolean) => void;
   setTTSBackend: (backend: 'webgpu' | 'wasm' | null) => void;
   setCurrentVoice: (voice: string) => void;
-
-  setHighlight: (sentenceId: string | null, wordIndex: number | null) => void;
-
-  // Sentence state actions
-  setSentenceState: (sentenceId: string, state: SentenceAudioState) => void;
-  setSentenceStates: (states: Record<string, SentenceAudioState>) => void;
-  clearSentenceStates: () => void;
 
   // Getters
   getCurrentChapter: () => Chapter | null;
@@ -101,19 +82,11 @@ export const useReaderStore = create<ReaderState>()(
       ttsBackend: null,
       currentVoice: 'F1',
 
-      highlightedSentenceId: null,
-      highlightedWordIndex: null,
-
-      sentenceStates: {},
-
       // Actions
       setCurrentBook: (book) => set({
         currentBook: book,
         currentChapterIndex: 0,
-        currentSentenceIndex: 0,
-        highlightedSentenceId: null,
-        highlightedWordIndex: null,
-        sentenceStates: {}
+        currentSentenceIndex: 0
       }),
 
       setChapter: (index) => {
@@ -121,10 +94,7 @@ export const useReaderStore = create<ReaderState>()(
         if (!currentBook || index < 0 || index >= currentBook.chapters.length) return;
         set({
           currentChapterIndex: index,
-          currentSentenceIndex: 0,
-          highlightedSentenceId: null,
-          highlightedWordIndex: null,
-          sentenceStates: {}
+          currentSentenceIndex: 0
         });
       },
 
@@ -214,22 +184,6 @@ export const useReaderStore = create<ReaderState>()(
       setTTSLoading: (ttsLoading) => set({ ttsLoading }),
       setTTSBackend: (ttsBackend) => set({ ttsBackend }),
       setCurrentVoice: (currentVoice) => set({ currentVoice }),
-
-      setHighlight: (sentenceId, wordIndex) => set({
-        highlightedSentenceId: sentenceId,
-        highlightedWordIndex: wordIndex
-      }),
-
-      // Sentence state actions
-      setSentenceState: (sentenceId, state) => set((prev) => ({
-        sentenceStates: { ...prev.sentenceStates, [sentenceId]: state }
-      })),
-
-      setSentenceStates: (states) => set((prev) => ({
-        sentenceStates: { ...prev.sentenceStates, ...states }
-      })),
-
-      clearSentenceStates: () => set({ sentenceStates: {} }),
 
       // Getters
       getCurrentChapter: () => {

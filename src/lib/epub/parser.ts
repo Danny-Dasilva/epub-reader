@@ -1,7 +1,7 @@
 import ePub, { Book, NavItem } from 'epubjs';
 import { ParsedBook, Chapter, TOCItem, Sentence } from './types';
-import { extractChapterText, extractChapterTitleFromHTML } from './textExtractor';
-import { tokenizeSentences, splitLongSentences } from './sentenceTokenizer';
+import { extractTextWithFormatting, extractChapterTitleFromHTML } from './formattingExtractor';
+import { tokenizeSentencesWithFormatting, splitLongSentencesWithFormatting } from './sentenceTokenizer';
 
 /**
  * Generate a unique book ID from metadata
@@ -111,7 +111,10 @@ export class EpubParser {
         if (!body) continue;
 
         const html = 'innerHTML' in body ? body.innerHTML : (body as Element).innerHTML;
-        const plainText = extractChapterText(html);
+
+        // Extract text with formatting metadata
+        const extracted = extractTextWithFormatting(html);
+        const plainText = extracted.plainText;
 
         // Skip chapters with very little content
         if (plainText.length < 50) continue;
@@ -122,14 +125,33 @@ export class EpubParser {
 
         // Create spoken content with title prepended for TTS
         // The title will be read as the first sentence of the chapter
-        const spokenText = `${chapterTitle}.\n\n${plainText}`;
+        const titlePrefix = `${chapterTitle}.\n\n`;
+        const spokenText = titlePrefix + plainText;
 
-        // Tokenize into sentences (includes title as first sentence)
+        // Adjust formatting and block positions to account for title prefix
+        const titleOffset = titlePrefix.length;
+        const adjustedFormatting = extracted.formattingSpans.map(span => ({
+          ...span,
+          startIndex: span.startIndex + titleOffset,
+          endIndex: span.endIndex + titleOffset
+        }));
+        const adjustedBlocks = extracted.blockBoundaries.map(block => ({
+          ...block,
+          startIndex: block.startIndex + titleOffset,
+          endIndex: block.endIndex + titleOffset
+        }));
+
+        // Tokenize into sentences with formatting metadata
         const chapterId = item.idref || `chapter-${i}`;
-        let sentences = tokenizeSentences(spokenText, chapterId);
+        let sentences = tokenizeSentencesWithFormatting(
+          spokenText,
+          chapterId,
+          adjustedFormatting,
+          adjustedBlocks
+        );
 
-        // Split long sentences for better TTS
-        sentences = splitLongSentences(sentences, 200);
+        // Split long sentences for better TTS (preserving formatting)
+        sentences = splitLongSentencesWithFormatting(sentences, 200);
 
         chapters.push({
           id: chapterId,

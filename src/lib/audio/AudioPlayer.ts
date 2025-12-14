@@ -199,8 +199,7 @@ export class AudioPlayer {
   }
 
   stop(): void {
-    this.stopInternal();
-    this.currentSentence = null;
+    this.stopInternal();  // Already clears currentSentence
     this.lastWordIndex = -1;
     this.isPlaying = false;
 
@@ -211,11 +210,12 @@ export class AudioPlayer {
     this.stopWordTracking();
 
     if (this.currentAudio) {
-      // Clear event handlers
+      // Clear event handlers FIRST to remove closure references that capture sentence
       this.currentAudio.onended = null;
       this.currentAudio.onerror = null;
       this.currentAudio.pause();
       this.currentAudio.src = '';  // Release blob URL reference
+      this.currentAudio.load();    // Force release of internal audio resources
       this.currentAudio = null;
     }
 
@@ -227,6 +227,9 @@ export class AudioPlayer {
       }
       this.mediaSource = null;
     }
+
+    // Clear sentence reference to allow GC of audio buffer and timestamps
+    this.currentSentence = null;
   }
 
   private startWordTracking(): void {
