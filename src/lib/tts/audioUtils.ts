@@ -1,16 +1,11 @@
 /**
- * Write WAV file to ArrayBuffer
+ * Write WAV file header to a DataView
  */
-export function writeWavFile(audioData: number[], sampleRate: number): ArrayBuffer {
+function writeWavHeader(view: DataView, dataSize: number, sampleRate: number): void {
   const numChannels = 1;
   const bitsPerSample = 16;
   const byteRate = sampleRate * numChannels * bitsPerSample / 8;
   const blockAlign = numChannels * bitsPerSample / 8;
-  const dataSize = audioData.length * 2;
-
-  // Create ArrayBuffer
-  const buffer = new ArrayBuffer(44 + dataSize);
-  const view = new DataView(buffer);
 
   // Write WAV header
   const writeString = (offset: number, string: string) => {
@@ -32,6 +27,17 @@ export function writeWavFile(audioData: number[], sampleRate: number): ArrayBuff
   view.setUint16(34, bitsPerSample, true);
   writeString(36, 'data');
   view.setUint32(40, dataSize, true);
+}
+
+/**
+ * Write WAV file to ArrayBuffer (legacy - accepts number[])
+ */
+export function writeWavFile(audioData: number[], sampleRate: number): ArrayBuffer {
+  const dataSize = audioData.length * 2;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  writeWavHeader(view, dataSize, sampleRate);
 
   // Write audio data
   const int16Data = new Int16Array(audioData.length);
@@ -58,9 +64,23 @@ export async function wavToAudioBuffer(
 
 /**
  * Convert Float32Array to WAV ArrayBuffer
+ * Optimized to avoid intermediate Array.from() copy
  */
 export function float32ToWav(audioData: Float32Array, sampleRate: number): ArrayBuffer {
-  return writeWavFile(Array.from(audioData), sampleRate);
+  const dataSize = audioData.length * 2;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  writeWavHeader(view, dataSize, sampleRate);
+
+  // Direct Float32 → Int16 conversion without intermediate Array
+  const int16View = new Int16Array(buffer, 44);
+  for (let i = 0; i < audioData.length; i++) {
+    const clamped = Math.max(-1.0, Math.min(1.0, audioData[i]));
+    int16View[i] = Math.floor(clamped * 32767);
+  }
+
+  return buffer;
 }
 
 /**

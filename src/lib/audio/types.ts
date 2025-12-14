@@ -7,8 +7,10 @@ import { WordTimestamp } from '../asr/types';
 export interface SentenceAudio {
   sentenceId: string;
   text: string;
-  audioBuffer: AudioBuffer;
-  blobUrl: string;  // WAV blob URL for HTMLAudioElement playback with preservesPitch
+  audioBuffer?: AudioBuffer;  // Optional: created lazily if needed
+  rawPcm: Float32Array;       // Raw PCM data for ASR processing
+  sampleRate: number;         // Sample rate of the audio
+  blobUrl?: string;           // WAV blob URL for HTMLAudioElement - created lazily for speed
   wordTimestamps: WordTimestamp[];
   duration: number;
   timestampSource: 'estimated' | 'asr';  // Track whether timestamps are estimated or ASR-verified
