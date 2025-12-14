@@ -611,6 +611,16 @@ body {
   opacity: 0.6;
 }
 
+.timeline-segment.asr {
+  background: var(--highlight-word-asr);
+  opacity: 0.7;
+}
+
+.timeline-segment.preloading {
+  background: var(--color-accent-yellow);
+  opacity: 0.25;
+}
+
 .timeline-segment.active {
   background: var(--accent, var(--color-accent-purple));
   opacity: 1;
@@ -711,6 +721,10 @@ body {
 
 [data-theme="dark"] .stat-item.ready .stat-value {
   color: var(--color-accent-yellow);
+}
+
+.stat-item.asr .stat-value {
+  color: var(--highlight-word-asr);
 }
 
 /* Playback Controls - Mobile Optimized */

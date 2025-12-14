@@ -8,6 +8,7 @@ interface TimelineProps {
   currentIndex: number;
   sentenceStates: Record<string, SentenceAudioState>;
   sentenceIds: string[];
+  asrCompletedIds: Set<string>;  // Sentences with ASR-refined timestamps
   onSeek: (index: number) => void;
   estimatedDuration?: number; // in seconds
   currentTime?: number; // in seconds
@@ -24,6 +25,7 @@ export const Timeline = memo(function Timeline({
   currentIndex,
   sentenceStates,
   sentenceIds,
+  asrCompletedIds,
   onSeek,
   estimatedDuration = 0,
   currentTime = 0
@@ -40,7 +42,8 @@ export const Timeline = memo(function Timeline({
 
     sentenceIds.forEach((id) => {
       const state = sentenceStates[id];
-      if (state === 'ready' || state === 'preloading' || state === 'playing') {
+      // Only count sentences with COMPLETED TTS generation (not 'preloading' which is just queued)
+      if (state === 'ready' || state === 'playing') {
         preloadedCount++;
       }
       if (state === 'played') {
@@ -54,6 +57,18 @@ export const Timeline = memo(function Timeline({
 
     return { preloadedCount, playedCount, preloadPercentage, playedPercentage };
   }, [sentenceStates, sentenceIds, totalSentences]);
+
+  // Calculate ASR progress - sentences with refined word timestamps
+  const asrStats = useMemo(() => {
+    let asrCount = 0;
+    sentenceIds.forEach((id) => {
+      if (asrCompletedIds.has(id)) {
+        asrCount++;
+      }
+    });
+    const asrPercentage = totalSentences > 0 ? (asrCount / totalSentences) * 100 : 0;
+    return { asrCount, asrPercentage };
+  }, [asrCompletedIds, sentenceIds, totalSentences]);
 
   const remainingTime = estimatedDuration - currentTime;
 
@@ -115,8 +130,8 @@ export const Timeline = memo(function Timeline({
     if (index === currentIndex) return 'playing';
     switch (state) {
       case 'played': return 'played';
-      case 'ready':
-      case 'preloading': return 'ready';
+      case 'ready': return 'ready';
+      case 'preloading': return 'preloading';
       case 'playing': return 'playing';
       default: return 'pending';
     }
@@ -137,11 +152,15 @@ export const Timeline = memo(function Timeline({
           const state = sentenceStates[id] || 'pending';
           const isPlayed = index < currentIndex;
           const isCurrent = index === currentIndex;
+          const hasASR = asrCompletedIds.has(id);
 
+          // Priority: active > played > asr > ready > preloading > pending
           let segmentClass = 'timeline-segment';
           if (isCurrent) segmentClass += ' active';
           else if (isPlayed) segmentClass += ' played';
-          else if (state === 'ready' || state === 'preloading') segmentClass += ' ready';
+          else if (hasASR && (state === 'ready' || state === 'playing')) segmentClass += ' asr';
+          else if (state === 'ready') segmentClass += ' ready';
+          else if (state === 'preloading') segmentClass += ' preloading';
           else segmentClass += ' pending';
 
           return (
@@ -182,9 +201,15 @@ export const Timeline = memo(function Timeline({
           </span>
         </div>
         <div className="stat-item ready">
-          <span className="stat-label">Processed</span>
+          <span className="stat-label">TTS</span>
           <span className="stat-value">
             {preloadStats.preloadedCount}/{totalSentences} ({Math.round(preloadStats.preloadPercentage)}%)
+          </span>
+        </div>
+        <div className="stat-item asr">
+          <span className="stat-label">STT</span>
+          <span className="stat-value">
+            {asrStats.asrCount}/{totalSentences} ({Math.round(asrStats.asrPercentage)}%)
           </span>
         </div>
       </div>

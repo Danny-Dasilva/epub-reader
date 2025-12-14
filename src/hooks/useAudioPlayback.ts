@@ -62,6 +62,8 @@ export function useAudioPlayback() {
   const clearSentenceStates = useSentenceStateStore(state => state.clearSentenceStates);
   const setHighlight = useSentenceStateStore(state => state.setHighlight);
   const clearHighlight = useSentenceStateStore(state => state.clearHighlight);
+  const markASRComplete = useSentenceStateStore(state => state.markASRComplete);
+  const clearASRCompleted = useSentenceStateStore(state => state.clearASRCompleted);
 
   // Initialize audio service
   useEffect(() => {
@@ -123,6 +125,9 @@ export function useAudioPlayback() {
         // Register ASR completion callback for live timestamp updates
         service.onASRComplete((sentenceId, timestamps) => {
           console.log(`[ASR] Timestamps upgraded for ${sentenceId}:`, timestamps.length, 'words');
+          if (mounted) {
+            markASRComplete(sentenceId);
+          }
         });
       } catch (error) {
         console.error('Failed to initialize audio service:', error);
@@ -255,7 +260,8 @@ export function useAudioPlayback() {
 
     // Clear sentence states since audio needs regeneration
     clearSentenceStates();
-  }, [speechRate, endSession, clearSentenceStates]);
+    clearASRCompleted();
+  }, [speechRate, endSession, clearSentenceStates, clearASRCompleted]);
 
   // Handle audio playback rate changes (just speeds up playback, no cache clear)
   useEffect(() => {
@@ -280,7 +286,8 @@ export function useAudioPlayback() {
 
     // Clear sentence states since audio needs regeneration
     clearSentenceStates();
-  }, [currentVoice, endSession, clearSentenceStates]);
+    clearASRCompleted();
+  }, [currentVoice, endSession, clearSentenceStates, clearASRCompleted]);
 
   // Handle chapter changes - cancel operations and reset state
   useEffect(() => {
@@ -292,6 +299,7 @@ export function useAudioPlayback() {
     // Clear highlights and states
     clearHighlight();
     clearSentenceStates();
+    clearASRCompleted();
 
     if (!service || !currentBook) return;
 
@@ -300,7 +308,7 @@ export function useAudioPlayback() {
       // Preload entire chapter
       service.preloadFullChapter(chapter.sentences, 0);
     }
-  }, [currentChapterIndex, currentBook, clearHighlight, clearSentenceStates, endSession]);
+  }, [currentChapterIndex, currentBook, clearHighlight, clearSentenceStates, clearASRCompleted, endSession]);
 
   /**
    * Play/pause toggle - OPTIMISTIC: updates state immediately

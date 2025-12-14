@@ -12,6 +12,7 @@ export interface SentenceStateMap {
 
 interface SentenceStateStoreState {
   sentenceStates: SentenceStateMap;
+  asrCompletedIds: Set<string>;  // Sentences with ASR-refined timestamps
   highlightedSentenceId: string | null;
   highlightedWordIndex: number | null;
   highlightTimestampSource: TimestampSource | null;  // Track if using accurate ASR timestamps
@@ -23,12 +24,15 @@ interface SentenceStateStoreActions {
   clearSentenceStates: () => void;
   setHighlight: (sentenceId: string | null, wordIndex: number | null, timestampSource?: TimestampSource) => void;
   clearHighlight: () => void;
+  markASRComplete: (sentenceId: string) => void;
+  clearASRCompleted: () => void;
 }
 
 export const useSentenceStateStore = create<SentenceStateStoreState & SentenceStateStoreActions>()(
   (set) => ({
     // Initial state (ephemeral - not persisted)
     sentenceStates: {},
+    asrCompletedIds: new Set<string>(),
     highlightedSentenceId: null,
     highlightedWordIndex: null,
     highlightTimestampSource: null,
@@ -54,6 +58,14 @@ export const useSentenceStateStore = create<SentenceStateStoreState & SentenceSt
       highlightedSentenceId: null,
       highlightedWordIndex: null,
       highlightTimestampSource: null
-    })
+    }),
+
+    markASRComplete: (sentenceId) => set((prev) => {
+      const newSet = new Set(prev.asrCompletedIds);
+      newSet.add(sentenceId);
+      return { asrCompletedIds: newSet };
+    }),
+
+    clearASRCompleted: () => set({ asrCompletedIds: new Set<string>() })
   })
 );

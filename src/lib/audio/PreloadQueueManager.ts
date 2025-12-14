@@ -23,6 +23,7 @@ export interface PreloadConfig {
   speed: number;             // Playback speed
   totalSteps: number;        // TTS denoising steps
   maxCacheSize: number;      // Max number of cached sentences (default: 20)
+  maxConcurrentTTS: number;  // Max concurrent TTS synthesis operations (default: 2)
   onItemComplete?: (sentenceId: string, cacheSize: number) => void;  // Callback when item finishes preloading
 }
 
@@ -40,7 +41,7 @@ export class PreloadQueueManager {
   private ttsManager: TTSWorkerManager;
   private cache: Map<string, SentenceAudio> = new Map();
   private queue: QueuedRequest[] = [];
-  private processing: QueuedRequest | null = null;
+  private activeRequests: Map<string, QueuedRequest> = new Map();  // Track concurrent TTS operations
   private sessionController: AbortController | null = null;
   private config: PreloadConfig;
   private stateCallback: PreloadStateCallback | null = null;
@@ -70,6 +71,7 @@ export class PreloadQueueManager {
       speed: 1.0,
       totalSteps: 5,
       maxCacheSize: 20,
+      maxConcurrentTTS: 2,  // Process 2 sentences concurrently
       ...config
     };
   }
@@ -153,9 +155,8 @@ export class PreloadQueueManager {
     // Link abort controllers to session
     this.sessionController.signal.addEventListener('abort', () => {
       this.queue.forEach(req => req.abortController.abort());
-      if (this.processing) {
-        this.processing.abortController.abort();
-      }
+      // Abort all active concurrent requests
+      this.activeRequests.forEach(req => req.abortController.abort());
     });
 
     // Mark all as preloading
@@ -174,30 +175,44 @@ export class PreloadQueueManager {
     this.sessionController?.abort();
     this.sessionController = null;
     this.queue = [];
-    this.processing = null;
+    // Abort and clear all active requests
+    this.activeRequests.forEach(req => req.abortController.abort());
+    this.activeRequests.clear();
   }
 
   /**
-   * Process the next item in the queue
+   * Process items in the queue concurrently (up to maxConcurrentTTS)
    */
-  private async processQueue(): Promise<void> {
-    if (this.processing || this.queue.length === 0) {
-      return;
+  private processQueue(): void {
+    // Continue spawning while under concurrency limit and queue has items
+    while (
+      this.activeRequests.size < this.config.maxConcurrentTTS &&
+      this.queue.length > 0
+    ) {
+      // Sort by priority and get the highest priority item
+      this.queue.sort((a, b) => a.priority - b.priority);
+      const request = this.queue.shift();
+
+      if (!request) break;
+
+      // Skip if aborted
+      if (request.abortController.signal.aborted) continue;
+
+      // Track as active
+      this.activeRequests.set(request.sentence.id, request);
+
+      // Process async (fire-and-forget - allows concurrency)
+      this.processSingleRequest(request);
     }
+  }
 
-    // Sort by priority and get the highest priority item
-    this.queue.sort((a, b) => a.priority - b.priority);
-    const request = this.queue.shift();
-
-    if (!request) return;
-
-    this.processing = request;
-
+  /**
+   * Process a single TTS request
+   */
+  private async processSingleRequest(request: QueuedRequest): Promise<void> {
     try {
       // Check if cancelled before starting
       if (request.abortController.signal.aborted) {
-        this.processing = null;
-        this.processQueue();
         return;
       }
 
@@ -235,8 +250,9 @@ export class PreloadQueueManager {
         this.stateCallback?.(request.sentence.id, 'error');
       }
     } finally {
-      this.processing = null;
-      // Continue processing queue
+      // Remove from active requests
+      this.activeRequests.delete(request.sentence.id);
+      // Continue processing queue to fill available slot
       this.processQueue();
     }
   }
@@ -446,10 +462,10 @@ export class PreloadQueueManager {
    * Add a sentence to the preload queue with high priority
    */
   prioritize(sentence: Sentence): void {
-    // Don't add if already cached or in queue
+    // Don't add if already cached, in queue, or being processed
     if (this.cache.has(sentence.id)) return;
     if (this.queue.some(r => r.sentence.id === sentence.id)) return;
-    if (this.processing?.sentence.id === sentence.id) return;
+    if (this.activeRequests.has(sentence.id)) return;
 
     // Add to front of queue with priority 0
     this.queue.unshift({
@@ -484,7 +500,7 @@ export class PreloadQueueManager {
       // Skip if already cached, queued, or being processed
       if (this.cache.has(sentence.id)) continue;
       if (this.queue.some(r => r.sentence.id === sentence.id)) continue;
-      if (this.processing?.sentence.id === sentence.id) continue;
+      if (this.activeRequests.has(sentence.id)) continue;
 
       // Respect char limit (but always allow at least one)
       if (toAdd.length > 0 && totalChars >= this.config.preloadCharLimit) {
@@ -497,8 +513,8 @@ export class PreloadQueueManager {
 
     if (toAdd.length === 0) return;
 
-    // Add to queue with priorities based on current queue length
-    const basePriority = this.queue.length + (this.processing ? 1 : 0);
+    // Add to queue with priorities based on current queue length and active requests
+    const basePriority = this.queue.length + this.activeRequests.size;
     toAdd.forEach((sentence, index) => {
       const abortController = new AbortController();
 
@@ -552,9 +568,8 @@ export class PreloadQueueManager {
     // Link abort controllers to session
     this.sessionController.signal.addEventListener('abort', () => {
       this.queue.forEach(req => req.abortController.abort());
-      if (this.processing) {
-        this.processing.abortController.abort();
-      }
+      // Abort all active concurrent requests
+      this.activeRequests.forEach(req => req.abortController.abort());
     });
 
     // Mark all as preloading
@@ -562,7 +577,7 @@ export class PreloadQueueManager {
       this.stateCallback?.(sentence.id, 'preloading');
     });
 
-    console.log(`[Preload] Queued ${toPreload.length} sentences for full chapter preload`);
+    console.log(`[Preload] Queued ${toPreload.length} sentences for full chapter preload (maxConcurrent: ${this.config.maxConcurrentTTS})`);
 
     // Start processing
     this.processQueue();
@@ -579,7 +594,7 @@ export class PreloadQueueManager {
    * Check if a sentence is currently being processed
    */
   isProcessing(sentenceId: string): boolean {
-    return this.processing?.sentence.id === sentenceId;
+    return this.activeRequests.has(sentenceId);
   }
 
   /**
