@@ -350,6 +350,9 @@ async function synthesize(
       text_mask: textMaskTensor
     });
     const duration = Array.from(dpOutputs.duration.data as Float32Array);
+
+    // Dispose duration output tensor to free memory
+    dpOutputs.duration.dispose?.();
     for (let i = 0; i < duration.length; i++) {
       duration[i] /= speed;
     }
@@ -361,6 +364,10 @@ async function synthesize(
       text_mask: textMaskTensor
     });
     const textEmb = textEncOutputs.text_emb;
+
+    // Dispose input tensors now that we have the outputs
+    textIdsTensor.dispose?.();
+    textMaskTensor.dispose?.();
 
     // Sample noisy latent
     let { xt, latentMask } = sampleNoisyLatent(
@@ -383,6 +390,10 @@ async function synthesize(
     for (let step = 0; step < totalSteps; step++) {
       // Check for cancellation between each denoising step
       if (cancelledRequests.has(requestId)) {
+        // Dispose tensors before returning
+        latentMaskTensor.dispose?.();
+        totalStepTensor.dispose?.();
+        textEmb.dispose?.();
         return null;
       }
 
@@ -413,6 +424,11 @@ async function synthesize(
 
       const denoised = Array.from(vectorEstOutputs.denoised_latent.data as Float32Array);
 
+      // Dispose tensors created in this iteration to prevent memory leak
+      currentStepTensor.dispose?.();
+      xtTensor.dispose?.();
+      vectorEstOutputs.denoised_latent.dispose?.();
+
       // Reshape to 3D
       const latentDim = xt[0].length;
       const latentLen = xt[0][0].length;
@@ -433,8 +449,17 @@ async function synthesize(
 
     // Final cancellation check before vocoder
     if (cancelledRequests.has(requestId)) {
+      // Dispose remaining tensors before returning
+      latentMaskTensor.dispose?.();
+      totalStepTensor.dispose?.();
+      textEmb.dispose?.();
       return null;
     }
+
+    // Dispose tensors used in the denoising loop (no longer needed)
+    latentMaskTensor.dispose?.();
+    totalStepTensor.dispose?.();
+    textEmb.dispose?.();
 
     // Generate waveform
     const finalXtTensor = new ort.Tensor(
@@ -445,6 +470,10 @@ async function synthesize(
 
     const vocoderOutputs = await vocoderSession.run({ latent: finalXtTensor });
     const wav = Array.from(vocoderOutputs.wav_tts.data as Float32Array);
+
+    // Dispose vocoder tensors
+    finalXtTensor.dispose?.();
+    vocoderOutputs.wav_tts.dispose?.();
 
     // Concatenate
     if (wavCat.length === 0) {

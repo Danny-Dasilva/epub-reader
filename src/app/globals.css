@@ -127,6 +127,113 @@ body {
   text-indent: 0;
 }
 
+/* ============================================
+   Block-Level Formatting (EPUB Structure)
+   ============================================ */
+
+.prose-blocks {
+  font-family: var(--font-serif);
+  font-size: 1.25rem;
+  line-height: 1.9;
+  letter-spacing: 0.01em;
+  color: var(--text);
+}
+
+/* Paragraph blocks */
+.block-paragraph {
+  margin-bottom: 1.5em;
+  text-indent: 1.5em;
+}
+
+.block-paragraph.first {
+  text-indent: 0;
+}
+
+/* List item blocks - indented with bullet point */
+.block-list-item {
+  margin-left: 2em;
+  margin-bottom: 0.75em;
+  text-indent: 1em;
+  position: relative;
+}
+
+.block-list-item.level-1 {
+  margin-left: 2em;
+}
+
+.block-list-item.level-2 {
+  margin-left: 3em;
+}
+
+.block-list-item.level-3 {
+  margin-left: 4em;
+}
+
+/* Blockquote blocks */
+.block-blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 1.25em;
+  margin: 1.5em 0;
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+[data-theme="sepia"] .block-blockquote {
+  border-left-color: var(--color-sepia);
+}
+
+[data-theme="dark"] .block-blockquote {
+  border-left-color: var(--color-night-border);
+}
+
+/* Heading blocks */
+.block-heading {
+  font-weight: 600;
+  margin-top: 1.5em;
+  margin-bottom: 0.75em;
+  text-indent: 0;
+}
+
+.block-heading.level-1 {
+  font-size: 1.75em;
+}
+
+.block-heading.level-2 {
+  font-size: 1.5em;
+}
+
+.block-heading.level-3 {
+  font-size: 1.25em;
+}
+
+.block-heading.level-4,
+.block-heading.level-5,
+.block-heading.level-6 {
+  font-size: 1.1em;
+}
+
+/* ============================================
+   Inline Formatting (EPUB Text Styles)
+   ============================================ */
+
+.format-italic {
+  font-style: italic;
+}
+
+.format-bold {
+  font-weight: 600;
+}
+
+.format-underline {
+  text-decoration: underline;
+}
+
+/* Combined formatting */
+.format-italic.format-bold {
+  font-style: italic;
+  font-weight: 600;
+}
+
 /* Sentence Highlighting */
 .sentence {
   padding: 0.1em 0;

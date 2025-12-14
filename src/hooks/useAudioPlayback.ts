@@ -117,8 +117,10 @@ export function useAudioPlayback() {
         // so continuous extension via onItemComplete is no longer needed.
         // Preloading continues even when paused.
 
-        // Register stable event handler
-        service.addEventListener((event) => {
+        // Register stable event handler and store cleanup function
+        // Note: The cleanup is handled in service.dispose() which clears all event handlers,
+        // but we store the unsubscribe for explicit cleanup if needed
+        const unsubscribe = service.addEventListener((event) => {
           handlePlaybackEventRef.current(event);
         });
 

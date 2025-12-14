@@ -349,6 +349,7 @@ export class AudioSyncService {
   dispose(): void {
     this.cancelAllOperations();
     this.preloadManager.dispose();
+    this.player.dispose();  // Closes AudioContext to release audio buffers
     this.eventHandlers.clear();
     this.isInitialized = false;
   }
