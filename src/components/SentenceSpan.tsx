@@ -2,7 +2,7 @@
 
 import { memo, useMemo } from 'react';
 import { Sentence } from '@/lib/epub';
-import { SentenceAudioState } from '@/store/sentenceStateStore';
+import { SentenceAudioState, TimestampSource } from '@/store/sentenceStateStore';
 
 interface SentenceSpanProps {
   sentence: Sentence;
@@ -10,6 +10,7 @@ interface SentenceSpanProps {
   state: SentenceAudioState | undefined;
   isHighlighted: boolean;
   highlightedWordIndex: number | null;
+  timestampSource: TimestampSource | null;
   onClick: () => void;
 }
 
@@ -23,6 +24,7 @@ export const SentenceSpan = memo(function SentenceSpan({
   state,
   isHighlighted,
   highlightedWordIndex,
+  timestampSource,
   onClick
 }: SentenceSpanProps) {
   // Memoize word splitting - only recompute when text changes
@@ -51,11 +53,13 @@ export const SentenceSpan = memo(function SentenceSpan({
   // Get word class based on position relative to highlighted word
   // - spoken: already read (gray)
   // - speaking: currently being read (highlighted)
+  // - asr-accurate: using accurate ASR timestamps (green highlight instead of yellow)
   // - (no extra class): upcoming words (normal)
   const getWordClass = (wordIdx: number): string => {
     if (!isHighlighted || highlightedWordIndex === null) return 'word';
-    if (wordIdx < highlightedWordIndex) return 'word spoken';
-    if (wordIdx === highlightedWordIndex) return 'word speaking';
+    const asrClass = timestampSource === 'asr' ? ' asr-accurate' : '';
+    if (wordIdx < highlightedWordIndex) return 'word spoken' + asrClass;
+    if (wordIdx === highlightedWordIndex) return 'word speaking' + asrClass;
     return 'word';
   };
 

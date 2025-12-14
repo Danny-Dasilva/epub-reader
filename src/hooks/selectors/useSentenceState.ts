@@ -11,7 +11,8 @@ export const useTimelineState = () => {
 
 export const useHighlightState = () => useSentenceStateStore(state => ({
   highlightedSentenceId: state.highlightedSentenceId,
-  highlightedWordIndex: state.highlightedWordIndex
+  highlightedWordIndex: state.highlightedWordIndex,
+  highlightTimestampSource: state.highlightTimestampSource
 }));
 
 export const useSentenceStateActions = () => useSentenceStateStore(state => ({

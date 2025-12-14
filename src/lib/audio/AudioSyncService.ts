@@ -1,7 +1,12 @@
 /**
  * Audio Synchronization Service
- * Orchestrates TTS generation and playback with estimated word timings.
+ * Orchestrates TTS generation and playback with word-level synchronization.
  * Uses Web Worker for non-blocking synthesis and supports cancellation.
+ *
+ * Word Timing Strategy:
+ * - Initial: Character-weighted estimation for immediate playback
+ * - Refinement: Parakeet ASR runs in background when 2+ sentences ahead
+ * - Progressive: Highlights become more accurate as ASR catches up
  */
 
 import { Sentence } from '../epub/types';
@@ -9,6 +14,7 @@ import { TTSWorkerManager, getSharedTTSWorkerManager } from '../tts/TTSWorkerMan
 import { PreloadQueueManager, PreloadStateCallback } from './PreloadQueueManager';
 import { AudioPlayer, getSharedAudioPlayer } from './AudioPlayer';
 import { SentenceAudio, PlaybackEvent, PlaybackEventHandler } from './types';
+import { WordTimestamp } from '../asr/types';
 import { SentenceAudioState } from '@/store/sentenceStateStore';
 
 export interface AudioSyncConfig {
@@ -92,8 +98,8 @@ export class AudioSyncService {
         }
       );
 
-      // Set up the preload manager with AudioContext
-      this.preloadManager.setAudioContext(this.player.getAudioContext());
+      // NOTE: AudioContext is NOT created here to avoid browser autoplay policy errors.
+      // It will be lazily initialized on first playSentence() call (after user gesture).
 
       // Forward player events
       this.player.addEventListener((event) => {
@@ -148,6 +154,12 @@ export class AudioSyncService {
    * Play a sentence
    */
   async playSentence(sentence: Sentence, signal?: AbortSignal): Promise<void> {
+    // Ensure AudioContext is set on first play (after user gesture)
+    // This avoids browser autoplay policy errors
+    if (!this.preloadManager.hasAudioContext()) {
+      this.preloadManager.setAudioContext(await this.player.getAudioContext());
+    }
+
     // Update state to playing
     this.stateCallback?.(sentence.id, 'playing');
 
@@ -281,6 +293,38 @@ export class AudioSyncService {
    */
   clearCache(): void {
     this.preloadManager.clearCache();
+  }
+
+  // ============================================
+  // ASR Refinement Integration
+  // ============================================
+
+  /**
+   * Update the current playing position for ASR scheduling
+   * Call this when playback starts or advances to a new sentence
+   */
+  setCurrentPlayingIndex(index: number, sentences: Sentence[]): void {
+    this.preloadManager.setCurrentPlayingIndex(index, sentences);
+  }
+
+  /**
+   * Set callback for when ASR completes and upgrades timestamps
+   * Use this to update the UI or AudioPlayer with improved timings
+   */
+  onASRComplete(callback: (sentenceId: string, timestamps: WordTimestamp[]) => void): void {
+    this.preloadManager.onASRComplete((sentenceId, timestamps) => {
+      // Update the player if this sentence is currently playing
+      this.player.updateActiveTimestamps(sentenceId, timestamps);
+      // Also call the external callback
+      callback(sentenceId, timestamps);
+    });
+  }
+
+  /**
+   * Clear the ASR queue (e.g., when seeking to a new position)
+   */
+  clearASRQueue(): void {
+    this.preloadManager.clearASRQueue();
   }
 
   /**

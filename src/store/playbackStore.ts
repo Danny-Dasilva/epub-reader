@@ -13,6 +13,7 @@ interface PlaybackState {
   volume: number;
   speechRate: number;
   audioPlaybackRate: number;
+  allowBackgroundPlayback: boolean;
   session: PlaybackSession;
 }
 
@@ -21,6 +22,7 @@ interface PlaybackActions {
   setVolume: (volume: number) => void;
   setSpeechRate: (rate: number) => void;
   setAudioPlaybackRate: (rate: number) => void;
+  setAllowBackgroundPlayback: (allow: boolean) => void;
   startSession: (sentenceId: string, chapterIndex: number) => AbortController;
   endSession: () => void;
   setPaused: (paused: boolean) => void;
@@ -42,6 +44,7 @@ export const usePlaybackStore = create<PlaybackState & PlaybackActions>()(
       volume: 1.0,
       speechRate: 1.05,
       audioPlaybackRate: 1.0,
+      allowBackgroundPlayback: false,
       session: initialSession,
 
       // Actions
@@ -52,6 +55,8 @@ export const usePlaybackStore = create<PlaybackState & PlaybackActions>()(
       setSpeechRate: (speechRate) => set({ speechRate }),
 
       setAudioPlaybackRate: (audioPlaybackRate) => set({ audioPlaybackRate }),
+
+      setAllowBackgroundPlayback: (allowBackgroundPlayback) => set({ allowBackgroundPlayback }),
 
       startSession: (sentenceId, chapterIndex) => {
         // Abort any existing session
@@ -93,7 +98,8 @@ export const usePlaybackStore = create<PlaybackState & PlaybackActions>()(
       partialize: (state) => ({
         volume: state.volume,
         speechRate: state.speechRate,
-        audioPlaybackRate: state.audioPlaybackRate
+        audioPlaybackRate: state.audioPlaybackRate,
+        allowBackgroundPlayback: state.allowBackgroundPlayback
       })
     }
   )

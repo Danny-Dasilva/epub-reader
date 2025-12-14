@@ -2,6 +2,8 @@
 
 import { memo, useEffect, useCallback } from 'react';
 import { Chapter } from '@/lib/epub';
+import { useUIStore, ScrollPosition } from '@/store/uiStore';
+import { usePlaybackStore } from '@/store/playbackStore';
 
 interface SettingsSheetProps {
   isOpen: boolean;
@@ -58,6 +60,16 @@ export const SettingsSheet = memo(function SettingsSheet({
   currentChapterIndex,
   onChapterSelect
 }: SettingsSheetProps) {
+  // Auto-scroll settings from store
+  const autoScroll = useUIStore((state) => state.autoScroll);
+  const scrollPosition = useUIStore((state) => state.scrollPosition);
+  const setAutoScroll = useUIStore((state) => state.setAutoScroll);
+  const setScrollPosition = useUIStore((state) => state.setScrollPosition);
+
+  // Background playback settings from store
+  const allowBackgroundPlayback = usePlaybackStore((state) => state.allowBackgroundPlayback);
+  const setAllowBackgroundPlayback = usePlaybackStore((state) => state.setAllowBackgroundPlayback);
+
   // Close on escape key
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
@@ -118,6 +130,57 @@ export const SettingsSheet = memo(function SettingsSheet({
                   {voice}
                 </button>
               ))}
+            </div>
+          </div>
+
+          {/* Auto-Scroll */}
+          <div className="settings-section">
+            <h3 className="settings-section-title">Auto-Scroll</h3>
+            <div className="settings-row justify-between">
+              <span className="text-sm text-[var(--text-muted)]">Follow current sentence</span>
+              <button
+                className={`toggle-switch ${autoScroll ? 'active' : ''}`}
+                onClick={() => setAutoScroll(!autoScroll)}
+                role="switch"
+                aria-checked={autoScroll}
+              >
+                <span className="toggle-switch-thumb" />
+              </button>
+            </div>
+            {autoScroll && (
+              <div className="settings-row mt-2">
+                <span className="text-xs text-[var(--text-muted)] mr-3">Position:</span>
+                {(['top', 'center'] as const).map((pos) => (
+                  <button
+                    key={pos}
+                    className={`settings-pill ${scrollPosition === pos ? 'active' : ''}`}
+                    onClick={() => setScrollPosition(pos)}
+                  >
+                    {pos.charAt(0).toUpperCase() + pos.slice(1)}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Background Playback */}
+          <div className="settings-section">
+            <h3 className="settings-section-title">Background Playback</h3>
+            <div className="settings-row justify-between">
+              <div>
+                <span className="text-sm text-[var(--text-muted)]">Continue when tab hidden</span>
+                <p className="text-xs text-[var(--text-muted)] opacity-70 mt-0.5">
+                  Enables lock screen controls
+                </p>
+              </div>
+              <button
+                className={`toggle-switch ${allowBackgroundPlayback ? 'active' : ''}`}
+                onClick={() => setAllowBackgroundPlayback(!allowBackgroundPlayback)}
+                role="switch"
+                aria-checked={allowBackgroundPlayback}
+              >
+                <span className="toggle-switch-thumb" />
+              </button>
             </div>
           </div>
 

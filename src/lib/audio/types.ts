@@ -11,6 +11,7 @@ export interface SentenceAudio {
   blobUrl: string;  // WAV blob URL for HTMLAudioElement playback with preservesPitch
   wordTimestamps: WordTimestamp[];
   duration: number;
+  timestampSource: 'estimated' | 'asr';  // Track whether timestamps are estimated or ASR-verified
 }
 
 export interface PlaybackState {
@@ -35,6 +36,7 @@ export interface PlaybackEvent {
   sentenceId?: string;
   wordIndex?: number;
   currentTime?: number;
+  timestampSource?: 'estimated' | 'asr';  // Track if using accurate ASR timestamps
   error?: Error;
 }
 

@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Crimson_Pro, DM_Sans } from "next/font/google";
+import Script from "next/script";
 import { ServiceWorkerProvider } from "@/components/ServiceWorkerProvider";
 import "./globals.css";
 
@@ -32,6 +33,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* Enable cross-origin isolation for SharedArrayBuffer/WebAssembly multi-threading */}
+        <Script src="/coi-serviceworker.js" strategy="beforeInteractive" />
+      </head>
       <body
         className={`${crimsonPro.variable} ${dmSans.variable} font-sans antialiased`}
       >

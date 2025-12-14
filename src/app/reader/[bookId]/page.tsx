@@ -3,19 +3,26 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { ParsedBook } from '@/lib/epub';
+import { calculatePagination, PaginationData, getPageForSentence } from '@/lib/epub/pagination';
 import { useNavigationStore } from '@/store/navigationStore';
 import { usePlaybackStore } from '@/store/playbackStore';
 import { useUIStore } from '@/store/uiStore';
 import { useTTSStore } from '@/store/ttsStore';
 import { useSentenceStateStore } from '@/store/sentenceStateStore';
 import { useLibraryStore } from '@/store/libraryStore';
+import { useReadingProgressStore } from '@/store/readingProgressStore';
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
 import { useVisibilityPause } from '@/hooks/useVisibilityPause';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
+import { useAutoScroll } from '@/hooks/useAutoScroll';
+import { useMediaSession } from '@/hooks/useMediaSession';
+import { useBookSearch } from '@/hooks/useBookSearch';
 import { VirtualizedSentenceList } from '@/components/VirtualizedSentenceList';
 import { Timeline } from '@/components/Timeline';
 import { PlaybackControls } from '@/components/PlaybackControls';
 import { SettingsSheet } from '@/components/SettingsSheet';
+import { SearchPanel } from '@/components/SearchPanel';
+import { PageIndicator } from '@/components/PageIndicator';
 
 // Icons
 const BackIcon = () => (
@@ -27,6 +34,13 @@ const BackIcon = () => (
 const ChevronRightIcon = () => (
   <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <polyline points="9 18 15 12 9 6" />
+  </svg>
+);
+
+const SearchIcon = () => (
+  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="11" cy="11" r="8" />
+    <line x1="21" y1="21" x2="16.65" y2="16.65" />
   </svg>
 );
 
@@ -44,7 +58,9 @@ export default function ReaderPage() {
   const mainRef = useRef<HTMLElement>(null);
 
   const [book, setBook] = useState<ParsedBook | null>(null);
+  const [pagination, setPagination] = useState<PaginationData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showSearch, setShowSearch] = useState(false);
 
   // Navigation store
   const currentBook = useNavigationStore(state => state.currentBook);
@@ -80,9 +96,20 @@ export default function ReaderPage() {
   const sentenceStates = useSentenceStateStore(state => state.sentenceStates);
   const highlightedSentenceId = useSentenceStateStore(state => state.highlightedSentenceId);
   const highlightedWordIndex = useSentenceStateStore(state => state.highlightedWordIndex);
+  const highlightTimestampSource = useSentenceStateStore(state => state.highlightTimestampSource);
   const setHighlight = useSentenceStateStore(state => state.setHighlight);
 
   const { updateLastRead } = useLibraryStore();
+
+  // Book search
+  const {
+    query: searchQuery,
+    setQuery: setSearchQuery,
+    results: searchResults,
+    totalMatches: searchTotalMatches,
+    isSearching,
+    clearSearch
+  } = useBookSearch({ book, pagination });
 
   // Initialize audio playback system
   const {
@@ -97,6 +124,13 @@ export default function ReaderPage() {
   // Auto-pause when tab is hidden
   useVisibilityPause();
 
+  // Auto-scroll to current sentence during playback
+  useAutoScroll({
+    currentSentenceIndex: isPlaying ? currentSentenceIndex : null,
+    isPlaying,
+    containerRef: mainRef
+  });
+
   // Load book from sessionStorage or library
   useEffect(() => {
     const loadBook = async () => {
@@ -108,6 +142,8 @@ export default function ReaderPage() {
         const parsed = JSON.parse(storedBook) as ParsedBook;
         setBook(parsed);
         setCurrentBook(parsed);
+        // Calculate pagination for page numbers
+        setPagination(calculatePagination(parsed));
         updateLastRead(bookId);
         setLoading(false);
         return;
@@ -140,21 +176,11 @@ export default function ReaderPage() {
     return estimateReadingTime(sentencesRead);
   }, [currentChapter, currentSentenceIndex]);
 
-  // Scroll to current sentence when it changes
-  useEffect(() => {
-    if (!currentChapter || !contentRef.current) return;
-
-    const sentenceEl = document.getElementById(
-      `sentence-${currentChapterIndex}-${currentSentenceIndex}`
-    );
-
-    if (sentenceEl) {
-      sentenceEl.scrollIntoView({
-        behavior: 'smooth',
-        block: 'center'
-      });
-    }
-  }, [currentChapterIndex, currentSentenceIndex, currentChapter]);
+  // Get current page from pagination data
+  const currentPageInfo = useMemo(() => {
+    if (!pagination) return { pageNumber: 0, totalPages: 0 };
+    return getPageForSentence(pagination, currentChapterIndex, currentSentenceIndex);
+  }, [pagination, currentChapterIndex, currentSentenceIndex]);
 
   // Scroll to top when chapter changes
   useEffect(() => {
@@ -230,6 +256,23 @@ export default function ReaderPage() {
     skipToSentence(newIndex);
   }, [currentChapter, currentSentenceIndex, skipToSentence]);
 
+  // Handle search result click - navigate to chapter and sentence
+  const handleSearchResultClick = useCallback((chapterIndex: number, sentenceIndex: number) => {
+    // If different chapter, change to it first
+    if (chapterIndex !== currentChapterIndex) {
+      handleChapterChange(chapterIndex);
+      // Need to wait for chapter change, then set sentence
+      // For now, just go to the chapter - sentence navigation happens via skipToSentence
+      setTimeout(() => {
+        skipToSentence(sentenceIndex);
+      }, 100);
+    } else {
+      skipToSentence(sentenceIndex);
+    }
+    setShowSearch(false);
+    clearSearch();
+  }, [currentChapterIndex, handleChapterChange, skipToSentence, clearSearch]);
+
   // Chapter navigation availability
   const canGoPrevChapter = book ? currentChapterIndex > 0 : false;
   const canGoNextChapter = book ? currentChapterIndex < book.chapters.length - 1 : false;
@@ -238,6 +281,16 @@ export default function ReaderPage() {
   useKeyboardShortcuts({
     onSkipBack: handleSkipBack,
     onSkipForward: handleSkipForward
+  });
+
+  // Media Session for lock screen controls (when background playback enabled)
+  useMediaSession({
+    onPlay: handlePlayPause,
+    onPause: handlePlayPause,
+    onNextSentence: handleNextSentence,
+    onPrevSentence: handlePrevSentence,
+    onSeekForward: handleSkipForward,
+    onSeekBackward: handleSkipBack
   });
 
   if (loading) {
@@ -290,9 +343,38 @@ export default function ReaderPage() {
           {currentChapter?.title || book.title}
         </span>
 
-        {/* Empty spacer for balance */}
-        <div className="w-11" />
+        {/* Search button */}
+        <button
+          onClick={() => setShowSearch(true)}
+          className="playback-btn"
+          title="Search in book"
+        >
+          <SearchIcon />
+        </button>
       </header>
+
+      {/* Search Panel */}
+      <SearchPanel
+        isOpen={showSearch}
+        onClose={() => {
+          setShowSearch(false);
+          clearSearch();
+        }}
+        query={searchQuery}
+        onQueryChange={setSearchQuery}
+        results={searchResults}
+        totalMatches={searchTotalMatches}
+        isSearching={isSearching}
+        onResultClick={handleSearchResultClick}
+      />
+
+      {/* Page Indicator - Left Margin Marginalia */}
+      {currentPageInfo.pageNumber > 0 && (
+        <PageIndicator
+          currentPage={currentPageInfo.pageNumber}
+          totalPages={currentPageInfo.totalPages}
+        />
+      )}
 
       {/* Main Content Area */}
       <main ref={mainRef} className="flex-1 overflow-y-auto">
@@ -319,6 +401,7 @@ export default function ReaderPage() {
                 currentIndex={currentSentenceIndex}
                 highlightedSentenceId={highlightedSentenceId}
                 highlightedWordIndex={highlightedWordIndex}
+                highlightTimestampSource={highlightTimestampSource}
                 onSentenceClick={handleSentenceClick}
                 isPlaying={isPlaying}
               />

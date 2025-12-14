@@ -258,17 +258,28 @@ const result = await asr.transcribe(audio16k, 16000);
 
 ### 4. Audio Sync Service (`lib/audio/`)
 
-Orchestrates TTS + ASR + playback.
+Orchestrates TTS synthesis, ASR refinement, and playback with progressive accuracy.
+
+**Word Timing Strategy:**
+- **Fast path:** TTS generates audio → character-weighted timing estimation → immediate playback
+- **Background refinement:** When 2+ sentences cached ahead, Parakeet ASR runs to upgrade timestamps
+- **Progressive UX:** Highlights become more accurate as ASR catches up
 
 **Flow:**
-1. User clicks sentence
-2. Generate TTS audio (44.1kHz)
-3. Resample to 16kHz
-4. Run Parakeet ASR for word timestamps
-5. Create AudioBuffer
-6. Play via Web Audio API
-7. Track current word via requestAnimationFrame
-8. Emit `wordChange` events for highlighting
+```
+User clicks sentence N
+        │
+        ▼
+TTS synthesizes N, N+1, N+2, N+3 with estimated timings
+        │
+        ▼
+Sentence N starts playing (estimated highlights)
+        │
+        ├──► Background: 3 sentences ahead, run ASR on N
+        │
+        ▼
+ASR completes → Upgrade N's timestamps → Live update if still playing
+```
 
 **State:**
 ```typescript
@@ -276,10 +287,17 @@ interface SentenceAudio {
   sentenceId: string;
   text: string;
   audioBuffer: AudioBuffer;
+  blobUrl: string;
   wordTimestamps: WordTimestamp[];
   duration: number;
+  timestampSource: 'estimated' | 'asr';  // Track accuracy
 }
 ```
+
+**Key Components:**
+- `PreloadQueueManager`: Manages TTS queue + ASR refinement queue
+- `AudioPlayer`: Supports live timestamp updates during playback
+- `AudioSyncService`: Coordinates TTS, ASR, and playback
 
 ### 5. State Management (`store/`)
 
