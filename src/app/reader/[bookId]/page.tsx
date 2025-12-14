@@ -100,6 +100,7 @@ export default function ReaderPage() {
 
   // Sentence state store
   const sentenceStates = useSentenceStateStore(state => state.sentenceStates);
+  const asrCompletedIds = useSentenceStateStore(state => state.asrCompletedIds);
   const highlightedSentenceId = useSentenceStateStore(state => state.highlightedSentenceId);
   const highlightedWordIndex = useSentenceStateStore(state => state.highlightedWordIndex);
   const highlightTimestampSource = useSentenceStateStore(state => state.highlightTimestampSource);
@@ -488,6 +489,7 @@ export default function ReaderPage() {
             currentIndex={currentSentenceIndex}
             sentenceStates={sentenceStates}
             sentenceIds={sentenceIds}
+            asrCompletedIds={asrCompletedIds}
             onSeek={handleTimelineSeek}
             estimatedDuration={estimatedDuration}
             currentTime={currentTime}
