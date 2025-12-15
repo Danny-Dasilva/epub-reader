@@ -340,6 +340,13 @@ export class PreloadQueueManager {
       // Create SentenceAudio
       const audio = await this.createSentenceAudio(sentence, result);
 
+      // Create blob URL NOW during preload (not lazily at playback time)
+      // This prevents main thread stall during sentence transitions
+      if (!audio.blobUrl && audio.rawPcm) {
+        const wavBuffer = float32ToWav(audio.rawPcm, audio.sampleRate);
+        audio.blobUrl = this.createAndTrackBlobUrl(sentence.id, wavBuffer);
+      }
+
       // Cache the result and track access
       this.cache.set(sentence.id, audio);
       this.touchAccess(sentence.id);
@@ -389,6 +396,13 @@ export class PreloadQueueManager {
       // Cache each sentence's audio
       for (const audio of audioObjects) {
         this.evictIfNeeded();
+
+        // Create blob URL NOW during preload (not lazily at playback time)
+        if (!audio.blobUrl && audio.rawPcm) {
+          const wavBuffer = float32ToWav(audio.rawPcm, audio.sampleRate);
+          audio.blobUrl = this.createAndTrackBlobUrl(audio.sentenceId, wavBuffer);
+        }
+
         this.cache.set(audio.sentenceId, audio);
         this.touchAccess(audio.sentenceId);
         this.stateCallback?.(audio.sentenceId, 'ready');
@@ -491,7 +505,8 @@ export class PreloadQueueManager {
       const toEvict = this.accessOrder.splice(evictIndex, 1)[0];
       this.revokeBlob(toEvict);
       this.cache.delete(toEvict);
-      this.stateCallback?.(toEvict, 'pending');
+      // Don't change state on eviction - keeps visual state as 'ready'
+      // When user reaches evicted sentence, prepareSentence will regenerate on-demand
     }
   }
 
@@ -621,18 +636,12 @@ export class PreloadQueueManager {
 
   /**
    * Get cached audio for a sentence (updates LRU tracking)
-   * Creates blob URL lazily if not already present (deferred from preload for speed)
+   * Blob URL is created during preload (not lazily) to prevent main thread stall during transitions
    */
   getAudio(sentenceId: string): SentenceAudio | undefined {
     const audio = this.cache.get(sentenceId);
     if (audio) {
       this.touchAccess(sentenceId);
-
-      // Lazy blob URL creation - deferred from preload for faster synthesis pipeline
-      if (!audio.blobUrl && audio.rawPcm) {
-        const wavBuffer = float32ToWav(audio.rawPcm, audio.sampleRate);
-        audio.blobUrl = this.createAndTrackBlobUrl(sentenceId, wavBuffer);
-      }
     }
     return audio;
   }
@@ -664,16 +673,9 @@ export class PreloadQueueManager {
       // Cancel all queued and active TTS requests
       this.ttsManager.cancelAll();
 
-      // Clear our internal queue and reset state for cancelled items
-      this.queue.forEach(req => {
-        this.stateCallback?.(req.sentence.id, 'pending');
-      });
+      // Clear our internal queue and active requests
+      // Don't change state - preloadFullChapter will re-mark items as 'preloading' when it re-queues them
       this.queue = [];
-
-      // Clear active requests and reset their state
-      this.activeRequests.forEach(req => {
-        this.stateCallback?.(req.sentence.id, 'pending');
-      });
       this.activeRequests.clear();
     }
 
@@ -696,12 +698,18 @@ export class PreloadQueueManager {
       this.evictIfNeeded();
 
       const audio = await this.createSentenceAudio(sentence, result);
+
+      // Create blob URL immediately (user is waiting for playback anyway)
+      if (!audio.blobUrl && audio.rawPcm) {
+        const wavBuffer = float32ToWav(audio.rawPcm, audio.sampleRate);
+        audio.blobUrl = this.createAndTrackBlobUrl(sentence.id, wavBuffer);
+      }
+
       this.cache.set(sentence.id, audio);
+      this.touchAccess(sentence.id);
       this.stateCallback?.(sentence.id, 'ready');
 
-      // Return via getAudio() to ensure blobUrl is created (lazy creation)
-      // Note: touchAccess() is called inside getAudio(), so we don't need it here
-      return this.getAudio(sentence.id)!;
+      return audio;
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) {
         this.stateCallback?.(sentence.id, 'error');

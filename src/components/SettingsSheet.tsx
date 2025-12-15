@@ -42,7 +42,7 @@ const VolumeIcon = ({ muted }: { muted?: boolean }) => (
   </svg>
 );
 
-const SPEECH_RATE_PRESETS = [0.9, 1.0, 1.05, 1.1, 1.2] as const;
+const SPEECH_RATE_PRESETS = [0.9, 1.0, 1.1, 1.25, 1.5] as const;
 const PLAYBACK_RATE_PRESETS = [0.75, 1.0, 1.25, 1.5, 2.0] as const;
 
 export const SettingsSheet = memo(function SettingsSheet({

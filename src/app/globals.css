@@ -714,7 +714,7 @@ body {
 }
 
 .timeline-segment.ready {
-  background: var(--color-accent-yellow);
+  background: #f97316;  /* orange-500 */
   opacity: 0.6;
 }
 
@@ -724,7 +724,7 @@ body {
 }
 
 .timeline-segment.preloading {
-  background: var(--color-accent-yellow);
+  background: #f97316;  /* orange-500 */
   opacity: 0.25;
 }
 
@@ -818,16 +818,11 @@ body {
 }
 
 .stat-item.ready .stat-value {
-  color: var(--color-accent-yellow);
-  /* Ensure readability against light backgrounds if needed, 
-     but yellow usually needs a darker shade for text. 
-     Using a darker gold for text visibility. */
-  color: #b45309;
-  /* amber-700 */
+  color: #ea580c;  /* orange-600 for light theme readability */
 }
 
 [data-theme="dark"] .stat-item.ready .stat-value {
-  color: var(--color-accent-yellow);
+  color: #f97316;  /* orange-500 */
 }
 
 .stat-item.asr .stat-value {
