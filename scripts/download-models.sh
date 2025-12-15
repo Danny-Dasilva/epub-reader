@@ -4,6 +4,13 @@
 
 set -e
 
+# Handle force download flag
+FORCE_DOWNLOAD=false
+if [[ "${1:-}" == "--force" ]] || [[ "${1:-}" == "-f" ]]; then
+    FORCE_DOWNLOAD=true
+    echo "Force download enabled - will re-download existing files"
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 PUBLIC_DIR="$PROJECT_ROOT/public"
@@ -54,7 +61,7 @@ TTS_FILES=(
 )
 
 for file in "${TTS_FILES[@]}"; do
-    if [ -f "$PUBLIC_DIR/models/tts/$file" ]; then
+    if [ -f "$PUBLIC_DIR/models/tts/$file" ] && [ "$FORCE_DOWNLOAD" = false ]; then
         echo "  - $file (already exists, skipping)"
     else
         echo "  - Downloading $file..."
@@ -72,10 +79,10 @@ echo "Downloading voice styles..."
 
 HF_VOICES="https://huggingface.co/Supertone/supertonic/resolve/main/voice_styles"
 
-VOICE_FILES=("M1.json" "M2.json" "F1.json" "F2.json")
+VOICE_FILES=("M1.json" "M2.json" "M3.json" "M4.json" "M5.json" "F1.json" "F2.json" "F3.json" "F4.json" "F5.json")
 
 for file in "${VOICE_FILES[@]}"; do
-    if [ -f "$PUBLIC_DIR/voice_styles/$file" ]; then
+    if [ -f "$PUBLIC_DIR/voice_styles/$file" ] && [ "$FORCE_DOWNLOAD" = false ]; then
         echo "  - $file (already exists, skipping)"
     else
         echo "  - Downloading $file..."

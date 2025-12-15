@@ -22,7 +22,7 @@ export const useTTSStore = create<TTSState & TTSActions>()(
       ttsReady: false,
       ttsLoading: false,
       ttsBackend: null,
-      currentVoice: 'F1',
+      currentVoice: 'F5',
 
       // Actions
       setTTSReady: (ttsReady) => set({ ttsReady }),
