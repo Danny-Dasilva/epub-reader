@@ -1,15 +1,17 @@
 /**
- * Audio player with word-level synchronization using HTMLAudioElement
+ * Audio player with word-level synchronization using dual HTMLAudioElements
  * Uses native browser preservesPitch for pitch-correct speed changes
+ * Implements ping-pong strategy for near-gapless playback
  */
 
 import { PlaybackEvent, PlaybackEventHandler, SentenceAudio } from './types';
 import { WordTimestamp } from '../asr/types';
 
+/** Callback to get audio for a sentence offset ahead of current */
+type GetSentenceAheadFn = (offset: number) => SentenceAudio | undefined;
+
 export class AudioPlayer {
   private audioContext: AudioContext | null = null;
-  private currentAudio: HTMLAudioElement | null = null;
-  private mediaSource: MediaElementAudioSourceNode | null = null;
   private gainNode: GainNode | null = null;
   private isPlaying: boolean = false;
   private currentSentence: SentenceAudio | null = null;
@@ -18,7 +20,20 @@ export class AudioPlayer {
   private lastWordIndex: number = -1;
   private playbackRate: number = 1.0;
   private volume: number = 1.0;
-  private playInProgress: boolean = false;  // Guard against concurrent play calls
+  private playInProgress: boolean = false;
+
+  // Dual-player ping-pong strategy for near-gapless playback
+  private playerA: HTMLAudioElement | null = null;
+  private playerB: HTMLAudioElement | null = null;
+  private mediaSourceA: MediaElementAudioSourceNode | null = null;
+  private mediaSourceB: MediaElementAudioSourceNode | null = null;
+  private activePlayer: 'A' | 'B' = 'A';
+  private nextSentenceQueued: SentenceAudio | null = null;
+  private nextStartTriggered: boolean = false;
+
+  // Gapless mode state
+  private gaplessMode: boolean = false;
+  private getSentenceAhead: GetSentenceAheadFn | null = null;
 
   constructor() {
     // AudioContext will be created on first user interaction
@@ -30,9 +45,21 @@ export class AudioPlayer {
       this.gainNode = this.audioContext.createGain();
       this.gainNode.connect(this.audioContext.destination);
       this.gainNode.gain.value = this.volume;
+
+      // Create the two audio players
+      this.playerA = new Audio();
+      this.playerA.preservesPitch = true;
+      this.playerB = new Audio();
+      this.playerB.preservesPitch = true;
+
+      // Connect both to gain node (for volume control)
+      this.mediaSourceA = this.audioContext.createMediaElementSource(this.playerA);
+      this.mediaSourceA.connect(this.gainNode);
+      this.mediaSourceB = this.audioContext.createMediaElementSource(this.playerB);
+      this.mediaSourceB.connect(this.gainNode);
     }
 
-    // Resume if suspended (browser autoplay policy) - MUST await!
+    // Resume if suspended (browser autoplay policy)
     if (this.audioContext.state === 'suspended') {
       await this.audioContext.resume();
     }
@@ -64,9 +91,13 @@ export class AudioPlayer {
 
   setPlaybackRate(rate: number): void {
     this.playbackRate = Math.max(0.5, Math.min(2.0, rate));
-    // Apply to current audio element - preservesPitch is true by default
-    if (this.currentAudio) {
-      this.currentAudio.playbackRate = this.playbackRate;
+
+    // Update both players
+    if (this.playerA) {
+      this.playerA.playbackRate = this.playbackRate;
+    }
+    if (this.playerB) {
+      this.playerB.playbackRate = this.playbackRate;
     }
   }
 
@@ -74,20 +105,26 @@ export class AudioPlayer {
     return this.playbackRate;
   }
 
+  private getActivePlayer(): HTMLAudioElement | null {
+    return this.activePlayer === 'A' ? this.playerA : this.playerB;
+  }
+
+  private getInactivePlayer(): HTMLAudioElement | null {
+    return this.activePlayer === 'A' ? this.playerB : this.playerA;
+  }
+
   async playSentence(sentence: SentenceAudio): Promise<void> {
-    // Guard against concurrent play calls
     if (this.playInProgress) {
-      console.warn('playSentence: Already in progress, ignoring call');
-      return;
+      console.log('[AudioPlayer] Interrupting in-progress playback for:', sentence.sentenceId);
+      this.stopInternal();
+      await Promise.resolve();
     }
 
     this.playInProgress = true;
 
     try {
-      // Stop any current playback
       this.stopInternal();
 
-      // Validate sentence audio
       if (!sentence.blobUrl) {
         console.error('playSentence: No blob URL provided', sentence);
         this.emit({
@@ -97,40 +134,51 @@ export class AudioPlayer {
         return;
       }
 
+      await this.ensureAudioContext();
+
       this.currentSentence = sentence;
       this.lastWordIndex = -1;
+      this.nextStartTriggered = false;
 
-      // Ensure AudioContext is ready BEFORE creating media source
-      const ctx = await this.ensureAudioContext();
+      const player = this.getActivePlayer()!;
+      player.src = sentence.blobUrl;
+      player.playbackRate = this.playbackRate;
 
-      // Create HTMLAudioElement with blob URL
-      this.currentAudio = new Audio(sentence.blobUrl);
-      this.currentAudio.preservesPitch = true;  // Native browser time-stretching
-      this.currentAudio.playbackRate = this.playbackRate;
-
-      // Connect to Web Audio API for volume control
-      this.mediaSource = ctx.createMediaElementSource(this.currentAudio);
-      this.mediaSource.connect(this.gainNode!);
-
-      // Handle playback end
-      this.currentAudio.onended = () => {
-        if (this.isPlaying) {
-          this.emit({
-            type: 'sentenceEnd',
-            sentenceId: sentence.sentenceId
-          });
-          this.isPlaying = false;
-          this.stopWordTracking();
+      // Handle near-end: trigger next player ~150ms before end
+      player.ontimeupdate = () => {
+        if (!this.nextStartTriggered && this.nextSentenceQueued && player.duration) {
+          const timeRemaining = player.duration - player.currentTime;
+          // Trigger when ~150ms remaining (adjusted for playback rate)
+          if (timeRemaining < 0.15 / this.playbackRate) {
+            this.nextStartTriggered = true;
+            this.startNextPlayer();
+          }
         }
       };
 
-      // Handle errors
-      this.currentAudio.onerror = (e) => {
-        const audio = this.currentAudio;
-        const errorCode = audio?.error?.code;
-        const errorMessage = audio?.error?.message || 'Unknown error';
+      // Handle playback end
+      player.onended = () => {
+        const sentenceId = this.currentSentence?.sentenceId || sentence.sentenceId;
+        this.emit({
+          type: 'sentenceEnd',
+          sentenceId
+        });
 
-        // MediaError codes: 1=ABORTED, 2=NETWORK, 3=DECODE, 4=SRC_NOT_SUPPORTED
+        // If next wasn't triggered by timeupdate (short sentences), handle here
+        if (!this.nextStartTriggered && this.nextSentenceQueued) {
+          this.startNextPlayer();
+        } else if (!this.nextSentenceQueued) {
+          // No more sentences queued - end of playback
+          this.isPlaying = false;
+          this.gaplessMode = false;
+          this.stopWordTracking();
+          this.emit({ type: 'stop' });
+        }
+      };
+
+      player.onerror = (e) => {
+        const errorCode = player.error?.code;
+        const errorMessage = player.error?.message || 'Unknown error';
         const codeNames: Record<number, string> = {
           1: 'MEDIA_ERR_ABORTED',
           2: 'MEDIA_ERR_NETWORK',
@@ -142,7 +190,7 @@ export class AudioPlayer {
           code: errorCode,
           codeName: errorCode ? codeNames[errorCode] : 'unknown',
           message: errorMessage,
-          src: audio?.src?.substring(0, 100),
+          src: player.src?.substring(0, 100),
           event: e
         });
 
@@ -152,19 +200,18 @@ export class AudioPlayer {
         });
       };
 
-      // Start playback with gain ramp to prevent click/pop at sentence start
+      // Gain ramp to prevent click
       if (this.gainNode && this.audioContext) {
-        // Set gain to 0 before playing to prevent initial spike
         this.gainNode.gain.setValueAtTime(0, this.audioContext.currentTime);
       }
 
-      await this.currentAudio.play();
+      await player.play();
       this.isPlaying = true;
 
-      // Ramp gain up smoothly after playback starts (prevents click/glitch at start)
+      // Ramp gain up
       if (this.gainNode && this.audioContext) {
         const now = this.audioContext.currentTime;
-        this.gainNode.gain.linearRampToValueAtTime(this.volume, now + 0.015); // 15ms ramp
+        this.gainNode.gain.linearRampToValueAtTime(this.volume, now + 0.015);
       }
 
       this.emit({
@@ -173,9 +220,8 @@ export class AudioPlayer {
       });
 
       this.emit({ type: 'play' });
-
-      // Start word tracking
       this.startWordTracking();
+
     } catch (e) {
       console.error('Failed to start playback:', e);
       this.emit({
@@ -187,10 +233,93 @@ export class AudioPlayer {
     }
   }
 
-  pause(): void {
-    if (!this.isPlaying || !this.currentAudio) return;
+  /**
+   * Prepare the next sentence in the inactive player for near-gapless transition
+   */
+  prepareNextSentence(sentence: SentenceAudio): void {
+    if (!sentence.blobUrl) return;
 
-    this.currentAudio.pause();
+    // Don't prepare if already preparing the same sentence
+    if (this.nextSentenceQueued?.sentenceId === sentence.sentenceId) return;
+
+    const inactivePlayer = this.getInactivePlayer();
+    if (!inactivePlayer) return;
+
+    inactivePlayer.src = sentence.blobUrl;
+    inactivePlayer.playbackRate = this.playbackRate;
+    inactivePlayer.preload = 'auto';
+    inactivePlayer.load();
+
+    this.nextSentenceQueued = sentence;
+    this.nextStartTriggered = false;
+  }
+
+  /**
+   * Start the next player and swap active/inactive
+   */
+  private startNextPlayer(): void {
+    if (!this.nextSentenceQueued) return;
+
+    const nextSentence = this.nextSentenceQueued;
+    this.nextSentenceQueued = null;
+
+    // Swap active player
+    this.activePlayer = this.activePlayer === 'A' ? 'B' : 'A';
+    const newActive = this.getActivePlayer()!;
+
+    // CRITICAL: Ensure playback rate is preserved when switching players
+    newActive.playbackRate = this.playbackRate;
+
+    // Update current sentence for word tracking
+    this.currentSentence = nextSentence;
+    this.lastWordIndex = -1;
+    this.nextStartTriggered = false;
+
+    // Setup handlers for new active player
+    newActive.ontimeupdate = () => {
+      if (!this.nextStartTriggered && this.nextSentenceQueued && newActive.duration) {
+        const timeRemaining = newActive.duration - newActive.currentTime;
+        if (timeRemaining < 0.15 / this.playbackRate) {
+          this.nextStartTriggered = true;
+          this.startNextPlayer();
+        }
+      }
+    };
+
+    newActive.onended = () => {
+      this.emit({
+        type: 'sentenceEnd',
+        sentenceId: nextSentence.sentenceId
+      });
+
+      if (!this.nextStartTriggered && this.nextSentenceQueued) {
+        this.startNextPlayer();
+      } else if (!this.nextSentenceQueued) {
+        this.isPlaying = false;
+        this.gaplessMode = false;
+        this.stopWordTracking();
+        this.emit({ type: 'stop' });
+      }
+    };
+
+    // Start playing immediately
+    newActive.play().catch(e => {
+      console.error('Failed to start next player:', e);
+    });
+
+    this.emit({ type: 'sentenceStart', sentenceId: nextSentence.sentenceId });
+
+    // Request more look-ahead scheduling
+    this.emit({ type: 'scheduleMore', sentenceId: nextSentence.sentenceId });
+  }
+
+  pause(): void {
+    if (!this.isPlaying) return;
+
+    const player = this.getActivePlayer();
+    if (player) {
+      player.pause();
+    }
     this.isPlaying = false;
     this.stopWordTracking();
 
@@ -198,21 +327,25 @@ export class AudioPlayer {
   }
 
   resume(): void {
-    if (this.isPlaying || !this.currentAudio) return;
+    if (this.isPlaying) return;
 
-    this.currentAudio.play().then(() => {
-      this.isPlaying = true;
-      this.emit({ type: 'play' });
-      this.startWordTracking();
-    }).catch(e => {
-      console.error('Failed to resume playback:', e);
-    });
+    const player = this.getActivePlayer();
+    if (player && player.src) {
+      player.play().then(() => {
+        this.isPlaying = true;
+        this.emit({ type: 'play' });
+        this.startWordTracking();
+      }).catch(e => {
+        console.error('Failed to resume playback:', e);
+      });
+    }
   }
 
   stop(): void {
-    this.stopInternal();  // Already clears currentSentence
+    this.stopInternal();
     this.lastWordIndex = -1;
     this.isPlaying = false;
+    this.gaplessMode = false;
 
     this.emit({ type: 'stop' });
   }
@@ -220,43 +353,38 @@ export class AudioPlayer {
   private stopInternal(): void {
     this.stopWordTracking();
 
-    // Set gain to 0 immediately before stopping to prevent click/pop
+    // Fade out to prevent click
     if (this.gainNode && this.audioContext && this.audioContext.state === 'running') {
       this.gainNode.gain.setValueAtTime(0, this.audioContext.currentTime);
     }
 
-    if (this.currentAudio) {
-      // Clear event handlers FIRST to remove closure references that capture sentence
-      this.currentAudio.onended = null;
-      this.currentAudio.onerror = null;
-      this.currentAudio.pause();
-      this.currentAudio.src = '';  // Release blob URL reference
-      this.currentAudio.load();    // Force release of internal audio resources
-      this.currentAudio = null;
+    // Stop both players
+    if (this.playerA) {
+      this.playerA.onended = null;
+      this.playerA.onerror = null;
+      this.playerA.ontimeupdate = null;
+      this.playerA.pause();
+    }
+    if (this.playerB) {
+      this.playerB.onended = null;
+      this.playerB.onerror = null;
+      this.playerB.ontimeupdate = null;
+      this.playerB.pause();
     }
 
-    if (this.mediaSource) {
-      try {
-        this.mediaSource.disconnect();
-      } catch {
-        // Already disconnected
-      }
-      this.mediaSource = null;
-    }
-
-    // Clear sentence reference to allow GC of audio buffer and timestamps
     this.currentSentence = null;
+    this.nextSentenceQueued = null;
+    this.nextStartTriggered = false;
   }
 
   private startWordTracking(): void {
     this.stopWordTracking();
 
     const track = () => {
-      if (!this.isPlaying || !this.currentAudio || !this.currentSentence) return;
+      const player = this.getActivePlayer();
+      if (!this.isPlaying || !player || !this.currentSentence) return;
 
-      // HTMLAudioElement.currentTime is already in original audio time
-      // The browser handles time-stretching internally
-      const currentTime = this.currentAudio.currentTime;
+      const currentTime = player.currentTime;
       const wordIndex = this.findCurrentWordIndex(currentTime);
 
       if (wordIndex !== this.lastWordIndex) {
@@ -289,12 +417,11 @@ export class AudioPlayer {
     const words = this.currentSentence.wordTimestamps;
     if (words.length === 0) return -1;
 
-    // Check if we're past the last word
     if (currentTime >= words[words.length - 1].end) {
       return words.length - 1;
     }
 
-    // Binary search for O(log N) instead of O(N)
+    // Binary search
     let left = 0;
     let right = words.length - 1;
 
@@ -303,7 +430,7 @@ export class AudioPlayer {
       const word = words[mid];
 
       if (currentTime >= word.start && currentTime < word.end) {
-        return mid; // Found the word containing currentTime
+        return mid;
       } else if (currentTime < word.start) {
         right = mid - 1;
       } else {
@@ -315,8 +442,8 @@ export class AudioPlayer {
   }
 
   getCurrentTime(): number {
-    if (!this.currentAudio) return 0;
-    return this.currentAudio.currentTime;
+    const player = this.getActivePlayer();
+    return player?.currentTime ?? 0;
   }
 
   getDuration(): number {
@@ -340,7 +467,6 @@ export class AudioPlayer {
     return ctx.decodeAudioData(arrayBuffer);
   }
 
-  // Convert Float32Array audio data to AudioBuffer (kept for compatibility)
   async createAudioBuffer(audioData: Float32Array, sampleRate: number): Promise<AudioBuffer> {
     const ctx = await this.ensureAudioContext();
     const buffer = ctx.createBuffer(1, audioData.length, sampleRate);
@@ -352,18 +478,129 @@ export class AudioPlayer {
 
   /**
    * Update timestamps for the currently playing sentence (for ASR refinement)
-   * The word tracking loop will pick up the new timestamps on the next frame
    */
   updateActiveTimestamps(sentenceId: string, timestamps: WordTimestamp[]): void {
     if (this.currentSentence?.sentenceId === sentenceId) {
       this.currentSentence.wordTimestamps = timestamps;
-      // Reset lastWordIndex to force re-evaluation with new timestamps
       this.lastWordIndex = -1;
     }
   }
 
+  // ============================================
+  // GAPLESS PLAYBACK (DUAL-PLAYER PING-PONG)
+  // ============================================
+
+  /**
+   * Main entry point for gapless playback using dual HTMLAudioElements
+   */
+  async playSentenceGapless(
+    sentence: SentenceAudio,
+    getSentenceAhead: GetSentenceAheadFn
+  ): Promise<void> {
+    if (this.playInProgress) {
+      console.warn('playSentenceGapless: Already in progress, ignoring call');
+      return;
+    }
+
+    this.playInProgress = true;
+    this.getSentenceAhead = getSentenceAhead;
+    this.gaplessMode = true;
+
+    try {
+      // Play the first sentence
+      await this.playSentence(sentence);
+
+      // Prepare the next sentence immediately
+      const next = getSentenceAhead(1);
+      if (next) {
+        this.prepareNextSentence(next);
+      }
+    } finally {
+      this.playInProgress = false;
+    }
+  }
+
+  /**
+   * Schedule more sentences for look-ahead (called from event handler)
+   */
+  scheduleMoreSentences(): void {
+    if (!this.gaplessMode || !this.getSentenceAhead) return;
+
+    // If we don't have a next sentence queued, prepare one
+    if (!this.nextSentenceQueued) {
+      const next = this.getSentenceAhead(1);
+      if (next) {
+        this.prepareNextSentence(next);
+      }
+    }
+  }
+
+  /**
+   * Pause gapless playback
+   */
+  pauseGapless(): void {
+    this.pause();
+  }
+
+  /**
+   * Resume gapless playback
+   */
+  async resumeGapless(): Promise<void> {
+    this.resume();
+  }
+
+  /**
+   * Handle playback rate change during playback
+   */
+  setPlaybackRateGapless(rate: number): void {
+    this.setPlaybackRate(rate);
+  }
+
+  /**
+   * Stop gapless playback
+   */
+  stopGapless(): void {
+    this.stop();
+  }
+
+  /**
+   * Check if currently using gapless mode
+   */
+  isGaplessMode(): boolean {
+    return this.gaplessMode;
+  }
+
+  /**
+   * Get current sentence ID
+   */
+  getCurrentSentenceId(): string | null {
+    return this.currentSentence?.sentenceId ?? null;
+  }
+
+  // Legacy compatibility methods
+  async prepareNextAudio(nextSentence: SentenceAudio): Promise<void> {
+    this.prepareNextSentence(nextSentence);
+  }
+
   dispose(): void {
     this.stop();
+
+    if (this.playerA) {
+      this.playerA.src = '';
+      this.playerA = null;
+    }
+    if (this.playerB) {
+      this.playerB.src = '';
+      this.playerB = null;
+    }
+    if (this.mediaSourceA) {
+      try { this.mediaSourceA.disconnect(); } catch {}
+      this.mediaSourceA = null;
+    }
+    if (this.mediaSourceB) {
+      try { this.mediaSourceB.disconnect(); } catch {}
+      this.mediaSourceB = null;
+    }
     if (this.audioContext) {
       this.audioContext.close();
       this.audioContext = null;

@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback, useState, useTransition } from 'react';
 import { useNavigationStore } from '@/store/navigationStore';
 import { usePlaybackStore } from '@/store/playbackStore';
 import { useTTSStore } from '@/store/ttsStore';
-import { useSentenceStateStore } from '@/store/sentenceStateStore';
+import { useSentenceStateStore, setHighlight, clearHighlight } from '@/store/sentenceStateStore';
 import {
   AudioSyncService,
   initializeAudioSyncService,
@@ -32,6 +32,9 @@ export function useAudioPlayback() {
   const serviceRef = useRef<AudioSyncService | null>(null);
   const [initProgress, setInitProgress] = useState(0);
   const [initMessage, setInitMessage] = useState('');
+
+  // Fix 6: useTransition for non-urgent updates
+  const [, startTransition] = useTransition();
 
   // Ref for stable event handler (avoids stale closures)
   const handlePlaybackEventRef = useRef<(event: PlaybackEvent) => void>(() => {});
@@ -67,10 +70,16 @@ export function useAudioPlayback() {
   // Sentence state store
   const setSentenceState = useSentenceStateStore(state => state.setSentenceState);
   const clearSentenceStates = useSentenceStateStore(state => state.clearSentenceStates);
-  const setHighlight = useSentenceStateStore(state => state.setHighlight);
-  const clearHighlight = useSentenceStateStore(state => state.clearHighlight);
   const markASRComplete = useSentenceStateStore(state => state.markASRComplete);
   const clearASRCompleted = useSentenceStateStore(state => state.clearASRCompleted);
+
+  // Fix 10: Use ref instead of state for session.sentenceId to avoid extra effect runs
+  const sessionSentenceIdRef = useRef(session.sentenceId);
+
+  // Sync ref (doesn't trigger effects)
+  useEffect(() => {
+    sessionSentenceIdRef.current = session.sentenceId;
+  }, [session.sentenceId]);
 
   // Initialize audio service
   useEffect(() => {
@@ -132,10 +141,9 @@ export function useAudioPlayback() {
         // so continuous extension via onItemComplete is no longer needed.
         // Preloading continues even when paused.
 
-        // Register stable event handler and store cleanup function
-        // Note: The cleanup is handled in service.dispose() which clears all event handlers,
-        // but we store the unsubscribe for explicit cleanup if needed
-        const unsubscribe = service.addEventListener((event) => {
+        // Register stable event handler
+        // Note: The cleanup is handled in service.dispose() which clears all event handlers
+        service.addEventListener((event) => {
           handlePlaybackEventRef.current(event);
         });
 
@@ -144,7 +152,14 @@ export function useAudioPlayback() {
           service.onASRComplete((sentenceId, timestamps) => {
             console.log(`[ASR] Timestamps upgraded for ${sentenceId}:`, timestamps.length, 'words');
             if (mounted) {
-              markASRComplete(sentenceId);
+              // Fix 9: Debounce ASR completion callbacks - defer to idle time
+              if ('requestIdleCallback' in window) {
+                requestIdleCallback(() => {
+                  markASRComplete(sentenceId);
+                }, { timeout: 1000 });
+              } else {
+                setTimeout(() => markASRComplete(sentenceId), 100);
+              }
             }
           });
         }
@@ -184,22 +199,69 @@ export function useAudioPlayback() {
           }
           break;
 
-        case 'sentenceEnd':
-          // Mark as played
+        case 'sentenceStart':
+          // Gapless mode: Audio player is advancing to next pre-scheduled sentence
+          // Update session tracking to match
           if (event.sentenceId && service) {
-            service.markPlayed(event.sentenceId);
+            updateSessionSentence(event.sentenceId);
+            service.updateGaplessPosition(event.sentenceId);
+            // Update navigation state to match
+            const chapter = getCurrentChapter();
+            if (chapter) {
+              const index = chapter.sentences.findIndex(s => s.id === event.sentenceId);
+              if (index !== -1) {
+                setSentenceIndex(index);
+              }
+            }
+          }
+          break;
+
+        case 'sentenceEnd': {
+          // Optimization #7: Batch state updates to reduce React reconciliation during transitions
+          // Critical path (navigation) must be synchronous for gapless audio
+          // Non-critical visual updates are deferred to microtask
+
+          const sentenceId = event.sentenceId;
+          const isGapless = service?.isGaplessMode() ?? false;
+
+          // Legacy mode: Advance navigation synchronously (critical for audio continuity)
+          let hasNext = true;
+          if (!isGapless) {
+            hasNext = nextSentence();
           }
 
-          // Reset pause state for new sentence
-          setPaused(false);
+          // Defer non-critical state updates to microtask to avoid blocking audio playback
+          queueMicrotask(() => {
+            // Mark sentence as played (visual feedback)
+            if (sentenceId && service) {
+              startTransition(() => {
+                service.markPlayed(sentenceId);
+              });
+            }
 
-          // Automatically advance to next sentence
-          const hasNext = nextSentence();
-          if (!hasNext) {
-            // End of book/chapter
-            setIsPlaying(false);
-            updateSessionSentence('');
+            // Update pause state (both modes)
+            setPaused(false);
+
+            // Handle end of chapter (legacy mode only)
+            if (!isGapless && !hasNext) {
+              setIsPlaying(false);
+              updateSessionSentence('');
+            }
+          });
+          break;
+        }
+
+        case 'scheduleMore':
+          // Request to schedule more look-ahead sentences
+          if (service) {
+            service.scheduleMoreSentences();
           }
+          break;
+
+        case 'stop':
+          // Playback stopped (end of chapter or explicit stop)
+          setIsPlaying(false);
+          updateSessionSentence('');
           break;
 
         case 'error':
@@ -208,7 +270,7 @@ export function useAudioPlayback() {
           break;
       }
     };
-  }, [setHighlight, nextSentence, setIsPlaying, setPaused, updateSessionSentence]);
+  }, [nextSentence, setIsPlaying, setPaused, updateSessionSentence, getCurrentChapter, setSentenceIndex]);
 
   // Handle play state changes - passive effect that handles pause/resume and auto-advance
   // Manual skips are handled by skipToSentence directly to avoid race conditions
@@ -229,7 +291,8 @@ export function useAudioPlayback() {
         // Resume from pause (same sentence, just paused)
         service.resume();
         setPaused(false);
-      } else if (session.sentenceId === sentence.id) {
+      } else if (sessionSentenceIdRef.current === sentence.id) {
+        // Fix 10: Use ref instead of state for comparison
         // Already playing/preparing this sentence (skipToSentence already started it)
         // This prevents duplicate playback when clicking a sentence triggers both
         // skipToSentence AND this effect via state changes
@@ -237,17 +300,25 @@ export function useAudioPlayback() {
         return;
       } else {
         // New sentence (auto-advance from sentenceEnd or initial play) - start fresh
-        const abortController = startSession(sentence.id, currentChapterIndex);
+        // In gapless mode, audio continues automatically via sentenceStart events
+        // This branch is for initial play or when not in gapless mode
+        if (!service.isGaplessMode()) {
+          const abortController = startSession(sentence.id, currentChapterIndex);
 
-        // Update playback position for cache eviction protection and ASR
-        service.setCurrentPlayingIndex(currentSentenceIndex, chapter.sentences);
+          // Sync ref IMMEDIATELY to prevent stale comparison on next effect run
+          sessionSentenceIdRef.current = sentence.id;
 
-        service.playSentence(sentence, abortController.signal).catch(error => {
-          if (error.name !== 'AbortError') {
-            console.error('Failed to play sentence:', error);
-            setIsPlaying(false);
-          }
-        });
+          // Update playback position for cache eviction protection and ASR
+          service.setCurrentPlayingIndex(currentSentenceIndex, chapter.sentences);
+
+          // Use gapless playback for sample-accurate transitions
+          service.playSentenceGapless(sentence, chapter.sentences, currentSentenceIndex, abortController.signal).catch(error => {
+            if (error.name !== 'AbortError') {
+              console.error('Failed to play sentence:', error);
+              setIsPlaying(false);
+            }
+          });
+        }
       }
 
       // Preload entire chapter from current position
@@ -259,7 +330,7 @@ export function useAudioPlayback() {
         setPaused(true);
       }
     }
-  }, [isPlaying, currentSentenceIndex, currentChapterIndex, session.sentenceId, session.isPaused, startSession, getCurrentChapter, setIsPlaying, setPaused]);
+  }, [isPlaying, currentSentenceIndex, currentChapterIndex, session.isPaused, startSession, getCurrentChapter, setIsPlaying, setPaused]);
 
   // Handle volume changes
   useEffect(() => {
@@ -340,7 +411,7 @@ export function useAudioPlayback() {
       // Preload entire chapter
       service.preloadFullChapter(chapter.sentences, 0);
     }
-  }, [currentChapterIndex, currentBook, clearHighlight, clearSentenceStates, clearASRCompleted, endSession]);
+  }, [currentChapterIndex, currentBook, clearSentenceStates, clearASRCompleted, endSession]);
 
   /**
    * Play/pause toggle - OPTIMISTIC: updates state immediately
@@ -391,7 +462,7 @@ export function useAudioPlayback() {
     setIsPlaying(true);
 
     // Play effect will handle actual playback
-  }, [getCurrentChapter, setHighlight, setIsPlaying, setSentenceIndex, setPaused]);
+  }, [getCurrentChapter, setIsPlaying, setSentenceIndex, setPaused]);
 
   // Skip to sentence - SINGLE entry point for sentence changes
   // Stops current audio, updates state, and starts new playback directly
@@ -402,13 +473,16 @@ export function useAudioPlayback() {
     const sentence = chapter.sentences[index];
     const service = serviceRef.current;
 
-    // STOP current playback first to ensure clean state
+    // STOP current playback first to ensure clean state (handles both modes)
     if (service && service.isPlaying()) {
       service.stop();
     }
 
     // Cancel existing session and create new one BEFORE state updates
     const abortController = startSession(sentence.id, currentChapterIndex);
+
+    // Sync ref IMMEDIATELY to prevent stale comparison in play effect
+    sessionSentenceIdRef.current = sentence.id;
 
     // Update state atomically
     setHighlight(sentence.id, null);
@@ -419,7 +493,8 @@ export function useAudioPlayback() {
       // Update playback position for cache eviction protection and ASR
       service.setCurrentPlayingIndex(index, chapter.sentences);
 
-      service.playSentence(sentence, abortController.signal).catch(error => {
+      // Use gapless playback for sample-accurate transitions
+      service.playSentenceGapless(sentence, chapter.sentences, index, abortController.signal).catch(error => {
         if (error.name !== 'AbortError') {
           console.error('Failed to play sentence:', error);
           setIsPlaying(false);
@@ -437,7 +512,7 @@ export function useAudioPlayback() {
       // No service ready, just ensure playing state for when it loads
       setIsPlaying(true);
     }
-  }, [getCurrentChapter, setHighlight, setIsPlaying, setSentenceIndex, startSession, currentChapterIndex]);
+  }, [getCurrentChapter, setIsPlaying, setSentenceIndex, startSession, currentChapterIndex]);
 
   return {
     initProgress,

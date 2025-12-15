@@ -8,7 +8,7 @@ import { useNavigationStore } from '@/store/navigationStore';
 import { usePlaybackStore } from '@/store/playbackStore';
 import { useUIStore } from '@/store/uiStore';
 import { useTTSStore } from '@/store/ttsStore';
-import { useSentenceStateStore } from '@/store/sentenceStateStore';
+import { useSentenceStateStore, subscribeToHighlight, setHighlight, Highlight } from '@/store/sentenceStateStore';
 import { useLibraryStore } from '@/store/libraryStore';
 import { useReadingProgressStore } from '@/store/readingProgressStore';
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
@@ -99,13 +99,42 @@ export default function ReaderPage() {
   const currentVoice = useTTSStore(state => state.currentVoice);
   const setCurrentVoice = useTTSStore(state => state.setCurrentVoice);
 
-  // Sentence state store
-  const sentenceStates = useSentenceStateStore(state => state.sentenceStates);
+  // Sentence state store - only subscribe to ASR completion state (not sentenceStates or highlight)
+  // Do NOT subscribe to sentenceStates map here - let child components subscribe selectively
   const asrCompletedIds = useSentenceStateStore(state => state.asrCompletedIds);
-  const highlightedSentenceId = useSentenceStateStore(state => state.highlightedSentenceId);
-  const highlightedWordIndex = useSentenceStateStore(state => state.highlightedWordIndex);
-  const highlightTimestampSource = useSentenceStateStore(state => state.highlightTimestampSource);
-  const setHighlight = useSentenceStateStore(state => state.setHighlight);
+
+  // Use non-reactive highlight state with RAF batching to avoid 60 re-renders/second
+  const [highlight, setHighlightState] = useState<Highlight>({ sentenceId: '', wordIndex: null, timestampSource: null });
+
+  useEffect(() => {
+    let rafId: number | null = null;
+    let latestHighlight: Highlight | null = null;
+
+    // Subscribe to highlight changes and batch updates with RAF
+    const unsubscribe = subscribeToHighlight((newHighlight) => {
+      latestHighlight = newHighlight;
+
+      // Cancel any pending RAF
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+
+      // Schedule update for next frame (batches rapid updates)
+      rafId = requestAnimationFrame(() => {
+        if (latestHighlight) {
+          setHighlightState(latestHighlight);
+        }
+        rafId = null;
+      });
+    });
+
+    return () => {
+      unsubscribe();
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+    };
+  }, []);
 
   const { updateLastRead } = useLibraryStore();
 
@@ -450,11 +479,10 @@ export default function ReaderPage() {
               {/* Sentences */}
               <VirtualizedSentenceList
                 sentences={currentChapter.sentences}
-                sentenceStates={sentenceStates}
                 currentIndex={currentSentenceIndex}
-                highlightedSentenceId={highlightedSentenceId}
-                highlightedWordIndex={highlightedWordIndex}
-                highlightTimestampSource={highlightTimestampSource}
+                highlightedSentenceId={highlight.sentenceId}
+                highlightedWordIndex={highlight.wordIndex}
+                highlightTimestampSource={highlight.timestampSource}
                 onSentenceClick={handleSentenceClick}
                 isPlaying={isPlaying}
               />
@@ -488,7 +516,6 @@ export default function ReaderPage() {
           <Timeline
             totalSentences={currentChapter?.sentences.length ?? 0}
             currentIndex={currentSentenceIndex}
-            sentenceStates={sentenceStates}
             sentenceIds={sentenceIds}
             asrCompletedIds={asrCompletedIds}
             onSeek={handleTimelineSeek}

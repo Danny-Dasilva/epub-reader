@@ -159,7 +159,7 @@ export class AudioSyncService {
   }
 
   /**
-   * Play a sentence
+   * Play a sentence (legacy method - uses HTMLAudioElement)
    */
   async playSentence(sentence: Sentence, signal?: AbortSignal): Promise<void> {
     // Ensure AudioContext is set on first play (after user gesture)
@@ -174,6 +174,10 @@ export class AudioSyncService {
     try {
       const audio = await this.prepareSentence(sentence, signal);
       await this.player.playSentence(audio);
+
+      // Optimization #1: Pre-warm the next sentence's audio element in background
+      // This eliminates ~5-15ms setup delay at sentence boundaries
+      this.prepareNextSentenceAudio();
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
         // Cancelled - restore to ready if cached
@@ -186,24 +190,144 @@ export class AudioSyncService {
   }
 
   /**
-   * Pause playback
+   * Optimization #1: Pre-warm the next sentence's audio element
+   * Called after starting playback of current sentence
+   */
+  private prepareNextSentenceAudio(): void {
+    // Get the next sentence audio from preload manager's tracking
+    const nextAudio = this.preloadManager.getNextSentenceAudio();
+    if (nextAudio) {
+      // Pre-warm the audio element in the player (async, non-blocking)
+      this.player.prepareNextAudio(nextAudio).catch(err => {
+        console.warn('[AudioSyncService] Failed to pre-warm next audio:', err);
+      });
+    }
+  }
+
+  // ============================================
+  // GAPLESS PLAYBACK METHODS
+  // ============================================
+
+  // Store sentences array for gapless look-ahead
+  private currentSentences: Sentence[] = [];
+  private currentSentenceIndex: number = 0;
+
+  /**
+   * Play a sentence using gapless playback
+   * Pre-schedules next sentences for sample-accurate transitions
+   */
+  async playSentenceGapless(
+    sentence: Sentence,
+    sentences: Sentence[],
+    currentIndex: number,
+    signal?: AbortSignal
+  ): Promise<void> {
+    // Ensure AudioContext is set
+    if (!this.preloadManager.hasAudioContext()) {
+      this.preloadManager.setAudioContext(await this.player.getAudioContext());
+    }
+
+    // Store for look-ahead callback
+    this.currentSentences = sentences;
+    this.currentSentenceIndex = currentIndex;
+
+    // Update state to playing
+    this.stateCallback?.(sentence.id, 'playing');
+
+    try {
+      // Prepare current sentence
+      const audio = await this.prepareSentence(sentence, signal);
+
+      // Create look-ahead callback that uses the stored sentences
+      const getSentenceAhead = (offset: number): SentenceAudio | undefined => {
+        const targetIndex = this.currentSentenceIndex + offset;
+        if (targetIndex < 0 || targetIndex >= this.currentSentences.length) {
+          return undefined;
+        }
+        const targetSentence = this.currentSentences[targetIndex];
+        return this.preloadManager.getAudio(targetSentence.id);
+      };
+
+      // Start gapless playback
+      await this.player.playSentenceGapless(audio, getSentenceAhead);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        if (this.preloadManager.isReady(sentence.id)) {
+          this.stateCallback?.(sentence.id, 'ready');
+        }
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Get audio for a sentence at offset from current position
+   * Used by player for look-ahead scheduling
+   */
+  getSentenceAhead(offset: number): SentenceAudio | undefined {
+    const targetIndex = this.currentSentenceIndex + offset;
+    if (targetIndex < 0 || targetIndex >= this.currentSentences.length) {
+      return undefined;
+    }
+    const targetSentence = this.currentSentences[targetIndex];
+    return this.preloadManager.getAudio(targetSentence.id);
+  }
+
+  /**
+   * Update current position for gapless playback (called on sentence transitions)
+   */
+  updateGaplessPosition(sentenceId: string): void {
+    const index = this.currentSentences.findIndex(s => s.id === sentenceId);
+    if (index !== -1) {
+      this.currentSentenceIndex = index;
+    }
+  }
+
+  /**
+   * Schedule more look-ahead sentences in gapless mode
+   */
+  scheduleMoreSentences(): void {
+    this.player.scheduleMoreSentences();
+  }
+
+  /**
+   * Check if player is in gapless mode
+   */
+  isGaplessMode(): boolean {
+    return this.player.isGaplessMode();
+  }
+
+  /**
+   * Pause playback (handles both legacy and gapless modes)
    */
   pause(): void {
-    this.player.pause();
+    if (this.player.isGaplessMode()) {
+      this.player.pauseGapless();
+    } else {
+      this.player.pause();
+    }
   }
 
   /**
-   * Resume playback
+   * Resume playback (handles both legacy and gapless modes)
    */
   resume(): void {
-    this.player.resume();
+    if (this.player.isGaplessMode()) {
+      this.player.resumeGapless();
+    } else {
+      this.player.resume();
+    }
   }
 
   /**
-   * Stop playback
+   * Stop playback (handles both legacy and gapless modes)
    */
   stop(): void {
-    this.player.stop();
+    if (this.player.isGaplessMode()) {
+      this.player.stopGapless();
+    } else {
+      this.player.stop();
+    }
   }
 
   /**
@@ -212,7 +336,11 @@ export class AudioSyncService {
   cancelAllOperations(): void {
     this.preloadManager.cancelSession();
     this.ttsManager.cancelAll();
-    this.player.stop();
+    if (this.player.isGaplessMode()) {
+      this.player.stopGapless();
+    } else {
+      this.player.stop();
+    }
   }
 
   /**
@@ -235,7 +363,11 @@ export class AudioSyncService {
    * Set audio playback rate (does NOT clear cache - just speeds up playback)
    */
   setAudioPlaybackRate(rate: number): void {
-    this.player.setPlaybackRate(rate);
+    if (this.player.isGaplessMode()) {
+      this.player.setPlaybackRateGapless(rate);
+    } else {
+      this.player.setPlaybackRate(rate);
+    }
   }
 
   /**
