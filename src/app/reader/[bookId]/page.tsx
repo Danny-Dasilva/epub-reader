@@ -85,6 +85,7 @@ export default function ReaderPage() {
   const setSpeechRate = usePlaybackStore(state => state.setSpeechRate);
   const audioPlaybackRate = usePlaybackStore(state => state.audioPlaybackRate);
   const setAudioPlaybackRate = usePlaybackStore(state => state.setAudioPlaybackRate);
+  const enableASR = usePlaybackStore(state => state.enableASR);
 
   // UI store
   const theme = useUIStore(state => state.theme);
@@ -493,6 +494,7 @@ export default function ReaderPage() {
             onSeek={handleTimelineSeek}
             estimatedDuration={estimatedDuration}
             currentTime={currentTime}
+            enableASR={enableASR}
           />
 
           {/* Playback Controls */}

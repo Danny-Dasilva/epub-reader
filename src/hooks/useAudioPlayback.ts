@@ -44,6 +44,7 @@ export function useAudioPlayback() {
   const volume = usePlaybackStore(state => state.volume);
   const speechRate = usePlaybackStore(state => state.speechRate);
   const audioPlaybackRate = usePlaybackStore(state => state.audioPlaybackRate);
+  const enableASR = usePlaybackStore(state => state.enableASR);
   const session = usePlaybackStore(state => state.session);
   const setIsPlaying = usePlaybackStore(state => state.setIsPlaying);
   const startSession = usePlaybackStore(state => state.startSession);
@@ -116,8 +117,10 @@ export function useAudioPlayback() {
         });
 
         // Start preloading Parakeet ASR model in background (non-blocking)
-        // This ensures ASR is ready when we have enough buffer for timestamp refinement
-        service.preloadParakeet();
+        // Only if ASR is enabled - saves ~50MB download when disabled
+        if (usePlaybackStore.getState().enableASR) {
+          service.preloadParakeet();
+        }
 
         // Note: preloadFullChapter() queues the entire chapter at once,
         // so continuous extension via onItemComplete is no longer needed.
@@ -130,13 +133,15 @@ export function useAudioPlayback() {
           handlePlaybackEventRef.current(event);
         });
 
-        // Register ASR completion callback for live timestamp updates
-        service.onASRComplete((sentenceId, timestamps) => {
-          console.log(`[ASR] Timestamps upgraded for ${sentenceId}:`, timestamps.length, 'words');
-          if (mounted) {
-            markASRComplete(sentenceId);
-          }
-        });
+        // Register ASR completion callback for live timestamp updates (only if enabled)
+        if (usePlaybackStore.getState().enableASR) {
+          service.onASRComplete((sentenceId, timestamps) => {
+            console.log(`[ASR] Timestamps upgraded for ${sentenceId}:`, timestamps.length, 'words');
+            if (mounted) {
+              markASRComplete(sentenceId);
+            }
+          });
+        }
       } catch (error) {
         console.error('Failed to initialize audio service:', error);
         if (mounted) {
@@ -228,8 +233,10 @@ export function useAudioPlayback() {
         // New sentence (auto-advance from sentenceEnd or initial play) - start fresh
         const abortController = startSession(sentence.id, currentChapterIndex);
 
-        // Update ASR tracking position for progressive timestamp refinement
-        service.setCurrentPlayingIndex(currentSentenceIndex, chapter.sentences);
+        // Update ASR tracking position for progressive timestamp refinement (only if enabled)
+        if (enableASR) {
+          service.setCurrentPlayingIndex(currentSentenceIndex, chapter.sentences);
+        }
 
         service.playSentence(sentence, abortController.signal).catch(error => {
           if (error.name !== 'AbortError') {
@@ -248,7 +255,7 @@ export function useAudioPlayback() {
         setPaused(true);
       }
     }
-  }, [isPlaying, currentSentenceIndex, currentChapterIndex, session.sentenceId, session.isPaused, startSession, getCurrentChapter, setIsPlaying, setPaused]);
+  }, [isPlaying, currentSentenceIndex, currentChapterIndex, session.sentenceId, session.isPaused, startSession, getCurrentChapter, setIsPlaying, setPaused, enableASR]);
 
   // Handle volume changes
   useEffect(() => {
@@ -278,6 +285,19 @@ export function useAudioPlayback() {
 
     service.setAudioPlaybackRate(audioPlaybackRate);
   }, [audioPlaybackRate]);
+
+  // Handle ASR setting changes - sync to service
+  useEffect(() => {
+    const service = serviceRef.current;
+    if (!service) return;
+
+    service.setEnableASR(enableASR);
+
+    // Clear ASR state when disabled
+    if (!enableASR) {
+      clearASRCompleted();
+    }
+  }, [enableASR, clearASRCompleted]);
 
   // Handle voice changes
   useEffect(() => {
@@ -392,8 +412,10 @@ export function useAudioPlayback() {
 
     // Start playback if service is ready
     if (service && service.isReady()) {
-      // Update ASR tracking position for progressive timestamp refinement
-      service.setCurrentPlayingIndex(index, chapter.sentences);
+      // Update ASR tracking position for progressive timestamp refinement (only if enabled)
+      if (enableASR) {
+        service.setCurrentPlayingIndex(index, chapter.sentences);
+      }
 
       service.playSentence(sentence, abortController.signal).catch(error => {
         if (error.name !== 'AbortError') {
@@ -413,7 +435,7 @@ export function useAudioPlayback() {
       // No service ready, just ensure playing state for when it loads
       setIsPlaying(true);
     }
-  }, [getCurrentChapter, setHighlight, setIsPlaying, setSentenceIndex, startSession, currentChapterIndex]);
+  }, [getCurrentChapter, setHighlight, setIsPlaying, setSentenceIndex, startSession, currentChapterIndex, enableASR]);
 
   return {
     initProgress,
