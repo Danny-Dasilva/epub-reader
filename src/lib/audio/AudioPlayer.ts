@@ -152,9 +152,20 @@ export class AudioPlayer {
         });
       };
 
-      // Start playback
+      // Start playback with gain ramp to prevent click/pop at sentence start
+      if (this.gainNode && this.audioContext) {
+        // Set gain to 0 before playing to prevent initial spike
+        this.gainNode.gain.setValueAtTime(0, this.audioContext.currentTime);
+      }
+
       await this.currentAudio.play();
       this.isPlaying = true;
+
+      // Ramp gain up smoothly after playback starts (prevents click/glitch at start)
+      if (this.gainNode && this.audioContext) {
+        const now = this.audioContext.currentTime;
+        this.gainNode.gain.linearRampToValueAtTime(this.volume, now + 0.015); // 15ms ramp
+      }
 
       this.emit({
         type: 'sentenceStart',
@@ -208,6 +219,11 @@ export class AudioPlayer {
 
   private stopInternal(): void {
     this.stopWordTracking();
+
+    // Set gain to 0 immediately before stopping to prevent click/pop
+    if (this.gainNode && this.audioContext && this.audioContext.state === 'running') {
+      this.gainNode.gain.setValueAtTime(0, this.audioContext.currentTime);
+    }
 
     if (this.currentAudio) {
       // Clear event handlers FIRST to remove closure references that capture sentence
@@ -271,15 +287,28 @@ export class AudioPlayer {
     if (!this.currentSentence?.wordTimestamps) return -1;
 
     const words = this.currentSentence.wordTimestamps;
-    for (let i = 0; i < words.length; i++) {
-      if (currentTime >= words[i].start && currentTime < words[i].end) {
-        return i;
-      }
-    }
+    if (words.length === 0) return -1;
 
     // Check if we're past the last word
-    if (words.length > 0 && currentTime >= words[words.length - 1].end) {
+    if (currentTime >= words[words.length - 1].end) {
       return words.length - 1;
+    }
+
+    // Binary search for O(log N) instead of O(N)
+    let left = 0;
+    let right = words.length - 1;
+
+    while (left <= right) {
+      const mid = Math.floor((left + right) / 2);
+      const word = words[mid];
+
+      if (currentTime >= word.start && currentTime < word.end) {
+        return mid; // Found the word containing currentTime
+      } else if (currentTime < word.start) {
+        right = mid - 1;
+      } else {
+        left = mid + 1;
+      }
     }
 
     return -1;
