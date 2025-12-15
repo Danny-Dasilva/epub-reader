@@ -12,6 +12,7 @@ interface TimelineProps {
   onSeek: (index: number) => void;
   estimatedDuration?: number; // in seconds
   currentTime?: number; // in seconds
+  enableASR?: boolean;  // Whether ASR is enabled (hides STT stat when false)
 }
 
 function formatTime(seconds: number): string {
@@ -28,7 +29,8 @@ export const Timeline = memo(function Timeline({
   asrCompletedIds,
   onSeek,
   estimatedDuration = 0,
-  currentTime = 0
+  currentTime = 0,
+  enableASR = false
 }: TimelineProps) {
   // Current playback position as percentage
   const playProgress = totalSentences > 0 ? ((currentIndex + 1) / totalSentences) * 100 : 0;
@@ -206,12 +208,14 @@ export const Timeline = memo(function Timeline({
             {preloadStats.preloadedCount}/{totalSentences} ({Math.round(preloadStats.preloadPercentage)}%)
           </span>
         </div>
-        <div className="stat-item asr">
-          <span className="stat-label">STT</span>
-          <span className="stat-value">
-            {asrStats.asrCount}/{totalSentences} ({Math.round(asrStats.asrPercentage)}%)
-          </span>
-        </div>
+        {enableASR && (
+          <div className="stat-item asr">
+            <span className="stat-label">STT</span>
+            <span className="stat-value">
+              {asrStats.asrCount}/{totalSentences} ({Math.round(asrStats.asrPercentage)}%)
+            </span>
+          </div>
+        )}
       </div>
     </div>
   );

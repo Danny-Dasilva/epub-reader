@@ -38,7 +38,7 @@ export class TTSWorkerManager {
   private workers: Worker[] = [];
   private workerBusy: boolean[] = [];
   private workerReady: boolean[] = [];
-  private numWorkers = 2;
+  private numWorkers = 1;
   private pendingRequests: Map<string, PendingRequest> = new Map();
   private requestQueue: Array<{ message: WorkerInMessage; id: string }> = [];
   private isReady = false;

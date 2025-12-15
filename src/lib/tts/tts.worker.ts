@@ -208,6 +208,7 @@ function chunkText(text: string, maxLen: number = 300): string[] {
 
 /**
  * Sample noisy latent tensor
+ * Returns a flat Float32Array for efficient tensor operations (avoids .flat() in hot loop)
  */
 function sampleNoisyLatent(
   duration: number[],
@@ -215,7 +216,7 @@ function sampleNoisyLatent(
   baseChunkSize: number,
   chunkCompress: number,
   latentDim: number
-): { xt: number[][][]; latentMask: number[][][] } {
+): { xt: Float32Array; latentMask: number[][][]; latentDimVal: number; latentLen: number } {
   const bsz = duration.length;
   const maxDur = Math.max(...duration);
   const wavLenMax = Math.floor(maxDur * sampleRate);
@@ -225,19 +226,15 @@ function sampleNoisyLatent(
   const latentLen = Math.floor((wavLenMax + chunkSize - 1) / chunkSize);
   const latentDimVal = latentDim * chunkCompress;
 
-  const xt: number[][][] = [];
-  for (let b = 0; b < bsz; b++) {
-    const batch: number[][] = [];
-    for (let d = 0; d < latentDimVal; d++) {
-      const row: number[] = [];
-      for (let t = 0; t < latentLen; t++) {
-        const u1 = Math.max(0.0001, Math.random());
-        const u2 = Math.random();
-        row.push(Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2));
-      }
-      batch.push(row);
-    }
-    xt.push(batch);
+  // Pre-allocate flat Float32Array for efficiency (avoids nested array creation and .flat())
+  const totalSize = bsz * latentDimVal * latentLen;
+  const xt = new Float32Array(totalSize);
+
+  // Fill with Gaussian noise directly into flat array
+  for (let i = 0; i < totalSize; i++) {
+    const u1 = Math.max(0.0001, Math.random());
+    const u2 = Math.random();
+    xt[i] = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
   }
 
   const latentLengths = wavLengths.map(len => Math.floor((len + chunkSize - 1) / chunkSize));
@@ -247,16 +244,18 @@ function sampleNoisyLatent(
     return [row];
   });
 
-  // Apply mask
+  // Apply mask to flat array (index: b * latentDimVal * latentLen + d * latentLen + t)
   for (let b = 0; b < bsz; b++) {
+    const bOffset = b * latentDimVal * latentLen;
     for (let d = 0; d < latentDimVal; d++) {
+      const dOffset = bOffset + d * latentLen;
       for (let t = 0; t < latentLen; t++) {
-        xt[b][d][t] *= latentMask[b][0][t];
+        xt[dOffset + t] *= latentMask[b][0][t];
       }
     }
   }
 
-  return { xt, latentMask };
+  return { xt, latentMask, latentDimVal, latentLen };
 }
 
 /**
@@ -278,7 +277,8 @@ async function synthesize(
   const usePreprocessed = !!preprocessedText;
   const textToChunk = usePreprocessed ? preprocessedText : text;
   const textChunks = chunkText(textToChunk);
-  let wavCat: number[] = [];
+  // Collect wav chunks as Float32Arrays for efficient concatenation at the end
+  const wavChunks: Float32Array[] = [];
   let durCat = 0;
 
   for (const chunk of textChunks) {
@@ -329,8 +329,8 @@ async function synthesize(
     // NOTE: textMaskTensor is still needed in the denoising loop, dispose it later
     textIdsTensor.dispose?.();
 
-    // Sample noisy latent
-    let { xt, latentMask } = sampleNoisyLatent(
+    // Sample noisy latent - returns flat Float32Array for efficiency
+    let { xt, latentMask, latentDimVal, latentLen } = sampleNoisyLatent(
       duration,
       sampleRate,
       ttsConfig.ae.base_chunk_size,
@@ -347,6 +347,7 @@ async function synthesize(
     const totalStepTensor = new ort.Tensor('float32', new Float32Array([totalSteps]), [bsz]);
 
     // Denoising loop with cancellation checks
+    // xt is kept as flat Float32Array throughout to avoid .flat() and array reconstruction
     for (let step = 0; step < totalSteps; step++) {
       // Check for cancellation between each denoising step
       if (cancelledRequests.has(requestId)) {
@@ -367,10 +368,11 @@ async function synthesize(
       } as WorkerProgressResponse);
 
       const currentStepTensor = new ort.Tensor('float32', new Float32Array([step]), [bsz]);
+      // Create tensor directly from flat array - no .flat(2) needed
       const xtTensor = new ort.Tensor(
         'float32',
-        new Float32Array(xt.flat(2)),
-        [bsz, xt[0].length, xt[0][0].length]
+        xt,
+        [bsz, latentDimVal, latentLen]
       );
 
       const vectorEstOutputs = await vectorEstSession.run({
@@ -383,29 +385,16 @@ async function synthesize(
         total_step: totalStepTensor
       });
 
-      const denoised = Array.from(vectorEstOutputs.denoised_latent.data as Float32Array);
+      // Get the denoised data directly as Float32Array - no Array.from() needed
+      const denoisedData = vectorEstOutputs.denoised_latent.data as Float32Array;
+
+      // Copy to xt for next iteration (reuse the same typed array buffer)
+      xt.set(denoisedData);
 
       // Dispose tensors created in this iteration to prevent memory leak
       currentStepTensor.dispose?.();
       xtTensor.dispose?.();
       vectorEstOutputs.denoised_latent.dispose?.();
-
-      // Reshape to 3D
-      const latentDim = xt[0].length;
-      const latentLen = xt[0][0].length;
-      xt = [];
-      let idx = 0;
-      for (let b = 0; b < bsz; b++) {
-        const batch: number[][] = [];
-        for (let d = 0; d < latentDim; d++) {
-          const row: number[] = [];
-          for (let t = 0; t < latentLen; t++) {
-            row.push(denoised[idx++]);
-          }
-          batch.push(row);
-        }
-        xt.push(batch);
-      }
     }
 
     // Final cancellation check before vocoder
@@ -424,33 +413,49 @@ async function synthesize(
     textMaskTensor.dispose?.();
     textEmb.dispose?.();
 
-    // Generate waveform
+    // Generate waveform - xt is already flat Float32Array
     const finalXtTensor = new ort.Tensor(
       'float32',
-      new Float32Array(xt.flat(2)),
-      [bsz, xt[0].length, xt[0][0].length]
+      xt,
+      [bsz, latentDimVal, latentLen]
     );
 
     const vocoderOutputs = await vocoderSession.run({ latent: finalXtTensor });
-    const wav = Array.from(vocoderOutputs.wav_tts.data as Float32Array);
+    // Keep as Float32Array - avoid Array.from() conversion
+    const wav = new Float32Array(vocoderOutputs.wav_tts.data as Float32Array);
 
     // Dispose vocoder tensors
     finalXtTensor.dispose?.();
     vocoderOutputs.wav_tts.dispose?.();
 
-    // Concatenate
-    if (wavCat.length === 0) {
-      wavCat = wav;
-      durCat = duration[0];
-    } else {
-      const silenceLen = Math.floor(0.3 * sampleRate);
-      const silence = new Array(silenceLen).fill(0);
-      wavCat = [...wavCat, ...silence, ...wav];
-      durCat += duration[0] + 0.3;
-    }
+    // Collect chunks for efficient concatenation at the end
+    wavChunks.push(wav);
+    durCat += duration[0];
   }
 
-  return { wav: new Float32Array(wavCat), duration: durCat };
+  // Efficient typed array concatenation - calculate total size once, allocate once
+  const silenceLen = Math.floor(0.3 * sampleRate);
+  const totalLength = wavChunks.reduce((sum, chunk, i) => {
+    // Add silence between chunks (not before first chunk)
+    return sum + chunk.length + (i > 0 ? silenceLen : 0);
+  }, 0);
+
+  const wavCat = new Float32Array(totalLength);
+  let offset = 0;
+  for (let i = 0; i < wavChunks.length; i++) {
+    // Add silence between chunks (not before first chunk)
+    if (i > 0) {
+      // Silence is already zeros in a new Float32Array, just advance offset
+      offset += silenceLen;
+    }
+    wavCat.set(wavChunks[i], offset);
+    offset += wavChunks[i].length;
+  }
+
+  // Add silence duration between chunks to total duration
+  durCat += (wavChunks.length - 1) * 0.3;
+
+  return { wav: wavCat, duration: durCat };
 }
 
 /**

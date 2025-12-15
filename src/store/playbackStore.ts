@@ -14,6 +14,7 @@ interface PlaybackState {
   speechRate: number;
   audioPlaybackRate: number;
   allowBackgroundPlayback: boolean;
+  enableASR: boolean;  // Enable ASR word timestamp refinement (loads ~50MB Parakeet model)
   session: PlaybackSession;
 }
 
@@ -23,6 +24,7 @@ interface PlaybackActions {
   setSpeechRate: (rate: number) => void;
   setAudioPlaybackRate: (rate: number) => void;
   setAllowBackgroundPlayback: (allow: boolean) => void;
+  setEnableASR: (enabled: boolean) => void;
   startSession: (sentenceId: string, chapterIndex: number) => AbortController;
   endSession: () => void;
   setPaused: (paused: boolean) => void;
@@ -45,6 +47,7 @@ export const usePlaybackStore = create<PlaybackState & PlaybackActions>()(
       speechRate: 1.05,
       audioPlaybackRate: 1.0,
       allowBackgroundPlayback: false,
+      enableASR: false,  // Default disabled to save ~50MB Parakeet model download
       session: initialSession,
 
       // Actions
@@ -57,6 +60,8 @@ export const usePlaybackStore = create<PlaybackState & PlaybackActions>()(
       setAudioPlaybackRate: (audioPlaybackRate) => set({ audioPlaybackRate }),
 
       setAllowBackgroundPlayback: (allowBackgroundPlayback) => set({ allowBackgroundPlayback }),
+
+      setEnableASR: (enableASR) => set({ enableASR }),
 
       startSession: (sentenceId, chapterIndex) => {
         // Abort any existing session
@@ -99,7 +104,8 @@ export const usePlaybackStore = create<PlaybackState & PlaybackActions>()(
         volume: state.volume,
         speechRate: state.speechRate,
         audioPlaybackRate: state.audioPlaybackRate,
-        allowBackgroundPlayback: state.allowBackgroundPlayback
+        allowBackgroundPlayback: state.allowBackgroundPlayback,
+        enableASR: state.enableASR
       })
     }
   )

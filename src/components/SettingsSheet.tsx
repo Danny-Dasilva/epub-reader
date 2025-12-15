@@ -70,6 +70,10 @@ export const SettingsSheet = memo(function SettingsSheet({
   const allowBackgroundPlayback = usePlaybackStore((state) => state.allowBackgroundPlayback);
   const setAllowBackgroundPlayback = usePlaybackStore((state) => state.setAllowBackgroundPlayback);
 
+  // ASR (word timestamp refinement) settings from store
+  const enableASR = usePlaybackStore((state) => state.enableASR);
+  const setEnableASR = usePlaybackStore((state) => state.setEnableASR);
+
   // Close on escape key
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
@@ -178,6 +182,27 @@ export const SettingsSheet = memo(function SettingsSheet({
                 onClick={() => setAllowBackgroundPlayback(!allowBackgroundPlayback)}
                 role="switch"
                 aria-checked={allowBackgroundPlayback}
+              >
+                <span className="toggle-switch-thumb" />
+              </button>
+            </div>
+          </div>
+
+          {/* Word Timestamp Refinement (ASR) */}
+          <div className="settings-section">
+            <h3 className="settings-section-title">Word Highlighting</h3>
+            <div className="settings-row justify-between">
+              <div>
+                <span className="text-sm text-[var(--text-muted)]">Precise word timing (ASR)</span>
+                <p className="text-xs text-[var(--text-muted)] opacity-70 mt-0.5">
+                  Downloads ~50MB model for accurate highlighting
+                </p>
+              </div>
+              <button
+                className={`toggle-switch ${enableASR ? 'active' : ''}`}
+                onClick={() => setEnableASR(!enableASR)}
+                role="switch"
+                aria-checked={enableASR}
               >
                 <span className="toggle-switch-thumb" />
               </button>

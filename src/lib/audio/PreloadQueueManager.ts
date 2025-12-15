@@ -27,6 +27,7 @@ export interface PreloadConfig {
   maxConcurrentTTS: number;  // Max concurrent TTS synthesis operations (default: 2)
   batchCharLimit: number;    // Max combined chars for batching short sentences (default: 600)
   singleSentenceLimit: number; // Max chars for a sentence to be batched (default: 300)
+  enableASR: boolean;        // Enable ASR word timestamp refinement (default: false)
   onItemComplete?: (sentenceId: string, cacheSize: number) => void;  // Callback when item finishes preloading
 }
 
@@ -94,6 +95,7 @@ export class PreloadQueueManager {
       maxConcurrentTTS: 2,      // Process 2 batches concurrently
       batchCharLimit: 600,      // Smaller batches = less post-processing overhead
       singleSentenceLimit: 600, // More sentences skip batch splitting (processed individually)
+      enableASR: false,         // Default disabled to save ~50MB Parakeet model download
       ...config
     };
   }
@@ -897,6 +899,11 @@ export class PreloadQueueManager {
    * Skip ASR at high playback speeds (1.5x+) as precise timestamps are less critical
    */
   private canRunASR(): boolean {
+    // Skip if ASR is disabled
+    if (!this.config.enableASR) {
+      return false;
+    }
+
     // Skip ASR at high playback speeds
     if (this.playbackRate >= 1.5) {
       return false;
@@ -1083,6 +1090,11 @@ export class PreloadQueueManager {
    * Call this early (e.g., after TTS init) to have ASR ready when needed
    */
   preloadParakeet(): void {
+    // Skip if ASR is disabled - saves ~50MB model download
+    if (!this.config.enableASR) {
+      return;
+    }
+
     // Don't block - just start the initialization
     this.ensureParakeetReady().catch((error) => {
       console.warn('[ASR] Background preload failed:', error);

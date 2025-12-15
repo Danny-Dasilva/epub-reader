@@ -352,6 +352,19 @@ export class AudioSyncService {
   }
 
   /**
+   * Enable or disable ASR word timestamp refinement
+   * When disabled, clears any pending ASR work and prevents model loading
+   */
+  setEnableASR(enabled: boolean): void {
+    this.preloadManager.setConfig({ enableASR: enabled });
+
+    // Clear pending ASR queue when disabling
+    if (!enabled) {
+      this.preloadManager.clearASRQueue();
+    }
+  }
+
+  /**
    * Dispose of resources
    */
   dispose(): void {
