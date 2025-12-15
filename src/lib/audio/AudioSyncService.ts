@@ -249,6 +249,9 @@ export class AudioSyncService {
    * Set voice style
    */
   async setVoiceStyle(voiceStylePath: string): Promise<void> {
+    // Stop player FIRST to release blob URL references before cache is cleared
+    this.player.stop();
+
     this.config.voiceStylePath = voiceStylePath;
     await this.ttsManager.setVoiceStyle(voiceStylePath);
     this.preloadManager.clearCache();

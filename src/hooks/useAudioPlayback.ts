@@ -18,8 +18,14 @@ const TTS_MODEL_PATH = '/models/tts';
 const VOICE_PATHS: Record<string, string> = {
   'M1': '/voice_styles/M1.json',
   'M2': '/voice_styles/M2.json',
+  'M3': '/voice_styles/M3.json',
+  'M4': '/voice_styles/M4.json',
+  'M5': '/voice_styles/M5.json',
   'F1': '/voice_styles/F1.json',
   'F2': '/voice_styles/F2.json',
+  'F3': '/voice_styles/F3.json',
+  'F4': '/voice_styles/F4.json',
+  'F5': '/voice_styles/F5.json',
 };
 
 export function useAudioPlayback() {
@@ -233,10 +239,8 @@ export function useAudioPlayback() {
         // New sentence (auto-advance from sentenceEnd or initial play) - start fresh
         const abortController = startSession(sentence.id, currentChapterIndex);
 
-        // Update ASR tracking position for progressive timestamp refinement (only if enabled)
-        if (enableASR) {
-          service.setCurrentPlayingIndex(currentSentenceIndex, chapter.sentences);
-        }
+        // Update playback position for cache eviction protection and ASR
+        service.setCurrentPlayingIndex(currentSentenceIndex, chapter.sentences);
 
         service.playSentence(sentence, abortController.signal).catch(error => {
           if (error.name !== 'AbortError') {
@@ -255,7 +259,7 @@ export function useAudioPlayback() {
         setPaused(true);
       }
     }
-  }, [isPlaying, currentSentenceIndex, currentChapterIndex, session.sentenceId, session.isPaused, startSession, getCurrentChapter, setIsPlaying, setPaused, enableASR]);
+  }, [isPlaying, currentSentenceIndex, currentChapterIndex, session.sentenceId, session.isPaused, startSession, getCurrentChapter, setIsPlaying, setPaused]);
 
   // Handle volume changes
   useEffect(() => {
@@ -412,10 +416,8 @@ export function useAudioPlayback() {
 
     // Start playback if service is ready
     if (service && service.isReady()) {
-      // Update ASR tracking position for progressive timestamp refinement (only if enabled)
-      if (enableASR) {
-        service.setCurrentPlayingIndex(index, chapter.sentences);
-      }
+      // Update playback position for cache eviction protection and ASR
+      service.setCurrentPlayingIndex(index, chapter.sentences);
 
       service.playSentence(sentence, abortController.signal).catch(error => {
         if (error.name !== 'AbortError') {
@@ -435,7 +437,7 @@ export function useAudioPlayback() {
       // No service ready, just ensure playing state for when it loads
       setIsPlaying(true);
     }
-  }, [getCurrentChapter, setHighlight, setIsPlaying, setSentenceIndex, startSession, currentChapterIndex, enableASR]);
+  }, [getCurrentChapter, setHighlight, setIsPlaying, setSentenceIndex, startSession, currentChapterIndex]);
 
   return {
     initProgress,

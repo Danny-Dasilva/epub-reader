@@ -81,9 +81,9 @@ export class PreloadQueueManager {
 
     // Adaptive cache size based on device memory
     // navigator.deviceMemory returns RAM in GB (4, 8, etc.) - undefined on some browsers
-    // Use smaller cache on low-memory devices to reduce memory pressure
+    // Use larger cache to support full chapter preloading without evicting nearby sentences
     const deviceMemory = typeof navigator !== 'undefined' ? (navigator as Navigator & { deviceMemory?: number }).deviceMemory : undefined;
-    const adaptiveCacheSize = deviceMemory && deviceMemory < 4 ? 10 : 20;
+    const adaptiveCacheSize = deviceMemory && deviceMemory < 4 ? 50 : 100;
 
     this.config = {
       preloadCount: 4,
@@ -463,12 +463,35 @@ export class PreloadQueueManager {
    * Evict oldest entries if cache exceeds max size
    */
   private evictIfNeeded(): void {
-    while (this.cache.size >= this.config.maxCacheSize && this.accessOrder.length > 0) {
-      const oldest = this.accessOrder.shift();
-      if (oldest) {
-        this.revokeBlob(oldest);
-        this.cache.delete(oldest);
+    const PROTECTION_WINDOW = 10;  // Protect current + next 10 sentences
+
+    // Build set of protected sentence IDs using existing currentSentences
+    const protectedIds = new Set<string>();
+    if (this.currentSentences.length > 0) {
+      const startIdx = Math.max(0, this.currentPlayingIndex);
+      const endIdx = Math.min(startIdx + PROTECTION_WINDOW, this.currentSentences.length);
+      for (let i = startIdx; i < endIdx; i++) {
+        protectedIds.add(this.currentSentences[i].id);
       }
+    }
+
+    while (this.cache.size >= this.config.maxCacheSize && this.accessOrder.length > 0) {
+      // Find oldest entry that is NOT protected
+      let evictIndex = -1;
+      for (let i = 0; i < this.accessOrder.length; i++) {
+        if (!protectedIds.has(this.accessOrder[i])) {
+          evictIndex = i;
+          break;
+        }
+      }
+
+      // If all entries are protected, allow cache to grow temporarily
+      if (evictIndex === -1) break;
+
+      const toEvict = this.accessOrder.splice(evictIndex, 1)[0];
+      this.revokeBlob(toEvict);
+      this.cache.delete(toEvict);
+      this.stateCallback?.(toEvict, 'pending');
     }
   }
 
