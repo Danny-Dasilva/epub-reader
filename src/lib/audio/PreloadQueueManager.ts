@@ -16,6 +16,7 @@ import { WordTimestamp } from '../asr/types';
 import { ParakeetASR, getSharedParakeetASR } from '../asr/parakeet';
 import { SentenceAudioState } from '@/store/sentenceStateStore';
 import { float32ToWav, createAudioBlobUrl, resampleAudio } from '../tts/audioUtils';
+import { MinHeap } from '../utils/MinHeap';
 
 export interface PreloadConfig {
   preloadCount: number;      // Max number of sentences to preload ahead (default: 4)
@@ -52,7 +53,8 @@ interface BatchedRequest {
 export class PreloadQueueManager {
   private ttsManager: TTSWorkerManager;
   private cache: Map<string, SentenceAudio> = new Map();
-  private queue: QueuedRequest[] = [];
+  // Optimization #2: Use min-heap for O(log n) insertion instead of O(n log n) sort
+  private queue = new MinHeap<QueuedRequest>((a, b) => a.priority - b.priority);
   private activeRequests: Map<string, QueuedRequest> = new Map();  // Track concurrent TTS operations
   private sessionController: AbortController | null = null;
   private config: PreloadConfig;
@@ -176,16 +178,19 @@ export class PreloadQueueManager {
       totalChars += sentence.text.length;
     }
 
-    // Queue sentences with priorities
-    this.queue = toPreload.map((sentence, index) => ({
-      sentence,
-      priority: index,
-      abortController: new AbortController()
-    }));
+    // Queue sentences with priorities - Optimization #2: use heap for O(log n) insert
+    this.queue.clear();
+    toPreload.forEach((sentence, index) => {
+      this.queue.push({
+        sentence,
+        priority: index,
+        abortController: new AbortController()
+      });
+    });
 
     // Link abort controllers to session (use once: true to prevent listener accumulation)
     this.sessionController.signal.addEventListener('abort', () => {
-      this.queue.forEach(req => req.abortController.abort());
+      this.queue.toArray().forEach(req => req.abortController.abort());
       // Abort all active concurrent requests
       this.activeRequests.forEach(req => req.abortController.abort());
     }, { once: true });
@@ -205,7 +210,7 @@ export class PreloadQueueManager {
   cancelSession(): void {
     this.sessionController?.abort();
     this.sessionController = null;
-    this.queue = [];
+    this.queue.clear();
     // Abort and clear all active requests
     this.activeRequests.forEach(req => req.abortController.abort());
     this.activeRequests.clear();
@@ -214,15 +219,15 @@ export class PreloadQueueManager {
   /**
    * Process items in the queue concurrently (up to maxConcurrentTTS)
    * Batches consecutive short sentences together for efficiency
+   * Optimization #2: Using min-heap eliminates need for O(n log n) sort
    */
   private processQueue(): void {
     // Continue spawning while under concurrency limit and queue has items
     while (
       this.activeRequests.size < this.config.maxConcurrentTTS &&
-      this.queue.length > 0
+      this.queue.size > 0
     ) {
-      // Sort by priority
-      this.queue.sort((a, b) => a.priority - b.priority);
+      // No need to sort - heap is already ordered by priority!
 
       // Try to batch consecutive short sentences
       const batch = this.collectBatch();
@@ -241,9 +246,10 @@ export class PreloadQueueManager {
 
   /**
    * Collect consecutive short sentences into a batch
+   * Optimization #2: Using heap peek()/pop() instead of [0]/shift()
    */
   private collectBatch(): BatchedRequest | null {
-    if (this.queue.length === 0) return null;
+    if (this.queue.size === 0) return null;
 
     const batch: Sentence[] = [];
     const abortControllers: AbortController[] = [];
@@ -251,15 +257,15 @@ export class PreloadQueueManager {
     let priority = Infinity;
 
     // Collect consecutive short sentences
-    while (this.queue.length > 0) {
-      const next = this.queue[0];
+    while (this.queue.size > 0) {
+      const next = this.queue.peek()!;
       const textLen = next.sentence.text.length;
 
       // Stop if sentence is too long to batch
       if (textLen > this.config.singleSentenceLimit) {
         if (batch.length === 0) {
           // First sentence is long - just return it alone
-          this.queue.shift();
+          this.queue.pop();
           this.activeRequests.set(next.sentence.id, next);
           return {
             sentences: [next.sentence],
@@ -278,7 +284,7 @@ export class PreloadQueueManager {
       }
 
       // Add to batch
-      const request = this.queue.shift()!;
+      const request = this.queue.pop()!;
       batch.push(request.sentence);
       abortControllers.push(request.abortController);
       totalChars += textLen;
@@ -342,8 +348,9 @@ export class PreloadQueueManager {
 
       // Create blob URL NOW during preload (not lazily at playback time)
       // This prevents main thread stall during sentence transitions
-      if (!audio.blobUrl && audio.rawPcm) {
-        const wavBuffer = float32ToWav(audio.rawPcm, audio.sampleRate);
+      if (!audio.blobUrl) {
+        // Optimization #3: Use pre-encoded wavBuffer from worker if available (avoids main thread encoding)
+        const wavBuffer = audio.wavBuffer ?? float32ToWav(audio.rawPcm, audio.sampleRate);
         audio.blobUrl = this.createAndTrackBlobUrl(sentence.id, wavBuffer);
       }
 
@@ -398,8 +405,9 @@ export class PreloadQueueManager {
         this.evictIfNeeded();
 
         // Create blob URL NOW during preload (not lazily at playback time)
-        if (!audio.blobUrl && audio.rawPcm) {
-          const wavBuffer = float32ToWav(audio.rawPcm, audio.sampleRate);
+        // Note: For batched audio, wavBuffer is not available (was for whole batch), so we fallback to encoding
+        if (!audio.blobUrl) {
+          const wavBuffer = audio.wavBuffer ?? float32ToWav(audio.rawPcm, audio.sampleRate);
           audio.blobUrl = this.createAndTrackBlobUrl(audio.sentenceId, wavBuffer);
         }
 
@@ -569,6 +577,7 @@ export class PreloadQueueManager {
       text: sentence.text,
       rawPcm: result.wav,
       sampleRate: result.sampleRate,
+      wavBuffer: result.wavBuffer,  // Optimization #3: Pre-encoded WAV buffer from worker
       // blobUrl created lazily in getAudio() when needed for playback
       wordTimestamps,
       duration: result.duration,
@@ -646,6 +655,25 @@ export class PreloadQueueManager {
     return audio;
   }
 
+
+  /**
+   * Get the next sentence's audio if available (for pre-warming)
+   * Returns undefined if no next sentence or audio not ready
+   */
+  getNextSentenceAudio(): SentenceAudio | undefined {
+    const nextIndex = this.currentPlayingIndex + 1;
+    if (nextIndex >= this.currentSentences.length) return undefined;
+
+    const nextSentence = this.currentSentences[nextIndex];
+    if (!nextSentence) return undefined;
+
+    const audio = this.cache.get(nextSentence.id);
+    if (audio?.blobUrl) {
+      return audio;
+    }
+    return undefined;
+  }
+
   /**
    * Check if audio is ready for a sentence
    */
@@ -675,7 +703,7 @@ export class PreloadQueueManager {
 
       // Clear our internal queue and active requests
       // Don't change state - preloadFullChapter will re-mark items as 'preloading' when it re-queues them
-      this.queue = [];
+      this.queue.clear();
       this.activeRequests.clear();
     }
 
@@ -700,8 +728,9 @@ export class PreloadQueueManager {
       const audio = await this.createSentenceAudio(sentence, result);
 
       // Create blob URL immediately (user is waiting for playback anyway)
-      if (!audio.blobUrl && audio.rawPcm) {
-        const wavBuffer = float32ToWav(audio.rawPcm, audio.sampleRate);
+      // Optimization #3: Use pre-encoded wavBuffer from worker if available
+      if (!audio.blobUrl) {
+        const wavBuffer = audio.wavBuffer ?? float32ToWav(audio.rawPcm, audio.sampleRate);
         audio.blobUrl = this.createAndTrackBlobUrl(sentence.id, wavBuffer);
       }
 
@@ -727,8 +756,8 @@ export class PreloadQueueManager {
     if (this.queue.some(r => r.sentence.id === sentence.id)) return;
     if (this.activeRequests.has(sentence.id)) return;
 
-    // Add to front of queue with priority 0
-    this.queue.unshift({
+    // Add with priority 0 (highest) - heap will place at front
+    this.queue.push({
       sentence,
       priority: 0,
       abortController: new AbortController()
@@ -773,8 +802,8 @@ export class PreloadQueueManager {
 
     if (toAdd.length === 0) return;
 
-    // Add to queue with priorities based on current queue length and active requests
-    const basePriority = this.queue.length + this.activeRequests.size;
+    // Add to queue with priorities based on current queue size and active requests
+    const basePriority = this.queue.size + this.activeRequests.size;
     toAdd.forEach((sentence, index) => {
       const abortController = new AbortController();
 
@@ -818,16 +847,19 @@ export class PreloadQueueManager {
       return; // Nothing to preload
     }
 
-    // Create queue with priorities
-    this.queue = toPreload.map((sentence, index) => ({
-      sentence,
-      priority: index,
-      abortController: new AbortController()
-    }));
+    // Create queue with priorities - Optimization #2: use heap for O(log n) insert
+    this.queue.clear();
+    toPreload.forEach((sentence, index) => {
+      this.queue.push({
+        sentence,
+        priority: index,
+        abortController: new AbortController()
+      });
+    });
 
     // Link abort controllers to session (use once: true to prevent listener accumulation)
     this.sessionController.signal.addEventListener('abort', () => {
-      this.queue.forEach(req => req.abortController.abort());
+      this.queue.toArray().forEach(req => req.abortController.abort());
       // Abort all active concurrent requests
       this.activeRequests.forEach(req => req.abortController.abort());
     }, { once: true });
@@ -1134,16 +1166,27 @@ export class PreloadQueueManager {
 
   /**
    * Upgrade timestamps for a cached sentence from estimated to ASR
+   * Optimization #6: Uses requestIdleCallback to prevent micro-stutters during playback
    */
   private upgradeTimestamps(sentenceId: string, timestamps: WordTimestamp[]): void {
     const audio = this.cache.get(sentenceId);
     if (!audio) return;
 
+    // Update cache immediately (needed for playback accuracy)
     audio.wordTimestamps = timestamps;
     audio.timestampSource = 'asr';
 
-    // Notify callback (for live updates during playback)
-    this.asrCompleteCallback?.(sentenceId, timestamps);
+    // Defer callback to idle time to prevent blocking the audio playback RAF loop
+    const notifyCallback = () => {
+      this.asrCompleteCallback?.(sentenceId, timestamps);
+    };
+
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(notifyCallback, { timeout: 500 });
+    } else {
+      // Fallback for browsers without requestIdleCallback (Safari)
+      setTimeout(notifyCallback, 0);
+    }
   }
 
   /**

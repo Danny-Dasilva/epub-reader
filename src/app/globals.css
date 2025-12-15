@@ -676,23 +676,45 @@ body {
   display: flex;
   gap: 2px;
   height: 12px;
-  /* Increased height */
   background: transparent;
-  border-radius: 4px;
-  /* Rounded container */
+  border-radius: 6px;
   overflow: hidden;
-  /* Clip segments at ends */
   cursor: default;
   position: relative;
-  /* For tooltip positioning */
   width: 100%;
-  /* Force full width */
+  margin-top: 4px;
+  /* Balanced vertical spacing for rounded corners */
 }
 
 .timeline-track.dense {
   gap: 0;
 }
 
+/* Optimization #4: Virtualized gradient timeline - single element instead of 500+ segments */
+.timeline-gradient {
+  flex: 1;
+  height: 100%;
+  border-radius: 2px;
+  cursor: pointer;
+  position: relative;
+}
+
+/* Active sentence marker - overlaid on gradient */
+.timeline-gradient-marker {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 3px;
+  min-width: 3px;
+  background: var(--accent, var(--color-accent-purple));
+  box-shadow: 0 0 8px var(--accent-glow, var(--color-accent-purple-glow));
+  border-radius: 2px;
+  transform: translateX(-50%);
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* Legacy segment styles - kept for small lists or fallback */
 .timeline-segment {
   flex: 1;
   height: 100%;

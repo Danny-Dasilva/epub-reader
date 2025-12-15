@@ -14,6 +14,7 @@ import type {
 
 export interface TTSSynthesisResult {
   wav: Float32Array;
+  wavBuffer: ArrayBuffer;  // Optimization #3: Pre-encoded WAV buffer from worker
   duration: number;
   sampleRate: number;
 }
@@ -153,6 +154,7 @@ export class TTSWorkerManager {
         if (pending) {
           pending.resolve({
             wav: completeMsg.wav,
+            wavBuffer: completeMsg.wavBuffer,  // Optimization #3: Pre-encoded WAV buffer
             duration: completeMsg.duration,
             sampleRate: completeMsg.sampleRate
           });

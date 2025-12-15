@@ -64,8 +64,16 @@ export const usePlaybackStore = create<PlaybackState & PlaybackActions>()(
       setEnableASR: (enableASR) => set({ enableASR }),
 
       startSession: (sentenceId, chapterIndex) => {
-        // Abort any existing session
         const { session } = get();
+
+        // Idempotent for same sentence - don't abort in-progress synthesis
+        // This prevents killing ongoing TTS synthesis when effect re-runs
+        if (session.sentenceId === sentenceId && session.abortController && !session.abortController.signal.aborted) {
+          // Same sentence, keep existing controller to preserve in-flight synthesis
+          return session.abortController;
+        }
+
+        // Different sentence - abort previous operations
         if (session.abortController) {
           session.abortController.abort();
         }

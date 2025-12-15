@@ -107,18 +107,27 @@ export const SentenceSpan = memo(function SentenceSpan({
     }
   }, [state]);
 
-  // Get word class based on position relative to highlighted word
+  // Memoize the ASR class suffix to avoid string concatenation on every word
+  const asrClassSuffix = useMemo(() => {
+    return timestampSource === 'asr' ? ' asr-accurate' : '';
+  }, [timestampSource]);
+
+  // Memoize word class computation function
   // - spoken: already read (gray)
   // - speaking: currently being read (highlighted)
   // - asr-accurate: using accurate ASR timestamps (green highlight instead of yellow)
   // - (no extra class): upcoming words (normal)
-  const getWordClass = (wordIdx: number): string => {
-    if (!isHighlighted || highlightedWordIndex === null) return 'word';
-    const asrClass = timestampSource === 'asr' ? ' asr-accurate' : '';
-    if (wordIdx < highlightedWordIndex) return 'word spoken' + asrClass;
-    if (wordIdx === highlightedWordIndex) return 'word speaking' + asrClass;
-    return 'word';
-  };
+  const getWordClass = useMemo(() => {
+    if (!isHighlighted || highlightedWordIndex === null) {
+      return () => 'word';
+    }
+
+    return (wordIdx: number): string => {
+      if (wordIdx < highlightedWordIndex) return 'word spoken' + asrClassSuffix;
+      if (wordIdx === highlightedWordIndex) return 'word speaking' + asrClassSuffix;
+      return 'word';
+    };
+  }, [isHighlighted, highlightedWordIndex, asrClassSuffix]);
 
   // Track word index for highlighting (only count non-whitespace parts)
   let wordIndex = 0;
@@ -154,5 +163,19 @@ export const SentenceSpan = memo(function SentenceSpan({
       {/* Add space after sentence for natural reading flow */}
       {' '}
     </span>
+  );
+}, (prevProps, nextProps) => {
+  // Custom equality function for memo - return true if props are equal (should NOT re-render)
+  // Only re-render if these specific props change
+  return (
+    prevProps.sentence.id === nextProps.sentence.id &&
+    prevProps.sentence.text === nextProps.sentence.text &&
+    prevProps.sentence.formatting === nextProps.sentence.formatting &&
+    prevProps.index === nextProps.index &&
+    prevProps.state === nextProps.state &&
+    prevProps.isHighlighted === nextProps.isHighlighted &&
+    prevProps.highlightedWordIndex === nextProps.highlightedWordIndex &&
+    prevProps.timestampSource === nextProps.timestampSource
+    // Note: onClick is intentionally excluded as it's typically a stable reference
   );
 });

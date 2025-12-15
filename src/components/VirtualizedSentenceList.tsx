@@ -1,13 +1,13 @@
 'use client';
 
 import { useCallback, useMemo, ReactNode } from 'react';
+import { Virtuoso } from 'react-virtuoso';
 import { Sentence, BlockType } from '@/lib/epub';
-import { SentenceStateMap, TimestampSource } from '@/store/sentenceStateStore';
+import { TimestampSource, useSentenceStateStore } from '@/store/sentenceStateStore';
 import { SentenceSpan } from './SentenceSpan';
 
 interface VirtualizedSentenceListProps {
   sentences: Sentence[];
-  sentenceStates: SentenceStateMap;
   currentIndex: number;
   highlightedSentenceId: string | null;
   highlightedWordIndex: number | null;
@@ -107,17 +107,58 @@ function BlockContainer({
 }
 
 /**
- * Sentence list component that renders all sentences grouped by blocks.
- * Preserves paragraph structure and other block-level formatting from the EPUB.
+ * Wrapper component that subscribes to individual sentence state.
+ * This ensures each sentence only re-renders when its own state changes.
+ */
+function SentenceWithState({
+  sentence,
+  globalIndex,
+  isActive,
+  highlightedWordIndex,
+  timestampSource,
+  onClick
+}: {
+  sentence: Sentence;
+  globalIndex: number;
+  isActive: boolean;
+  highlightedWordIndex: number | null;
+  timestampSource: TimestampSource | null;
+  onClick: () => void;
+}) {
+  // Subscribe only to this sentence's state - prevents re-renders when other sentences change
+  const state = useSentenceStateStore(state => state.sentenceStates[sentence.id]);
+
+  return (
+    <SentenceSpan
+      sentence={sentence}
+      index={globalIndex}
+      state={state}
+      isHighlighted={isActive}
+      highlightedWordIndex={isActive ? highlightedWordIndex : null}
+      timestampSource={isActive ? timestampSource : null}
+      onClick={onClick}
+    />
+  );
+}
+
+/**
+ * Virtualized sentence list component that renders blocks efficiently.
+ * Uses react-virtuoso for optimal performance with large documents.
+ *
+ * Optimizations applied:
+ * - Low overscan (2 items) to minimize off-screen rendering
+ * - Memoized itemContent callback with stable dependencies
+ * - computeItemKey for stable React keys
+ * - Individual SentenceSpan components subscribe to their own state via SentenceWithState
  */
 export function VirtualizedSentenceList({
   sentences,
-  sentenceStates,
   highlightedSentenceId,
   highlightedWordIndex,
   highlightTimestampSource,
   onSentenceClick,
 }: VirtualizedSentenceListProps) {
+  // Stable callback for sentence clicks
   const handleClick = useCallback((index: number) => {
     onSentenceClick(index);
   }, [onSentenceClick]);
@@ -125,34 +166,67 @@ export function VirtualizedSentenceList({
   // Group sentences into blocks for structured rendering
   const blocks = useMemo(() => groupSentencesByBlock(sentences), [sentences]);
 
-  return (
-    <div className="leading-relaxed prose-blocks">
-      {blocks.map((block, blockIndex) => (
-        <BlockContainer
-          key={`block-${blockIndex}`}
-          type={block.type}
-          level={block.level}
-          isFirst={blockIndex === 0}
-        >
-          {block.sentences.map(({ sentence, globalIndex }) => {
-            const isActive = highlightedSentenceId === sentence.id;
-            const state = sentenceStates[sentence.id];
+  // Stable computeItemKey - returns unique stable identifier for each block
+  // Uses first sentence ID to ensure stability across re-renders
+  const computeItemKey = useCallback((index: number) => {
+    const block = blocks[index];
+    if (!block || block.sentences.length === 0) return `block-${index}`;
+    // Use first sentence ID as block key for stability
+    return `block-${block.sentences[0].sentence.id}`;
+  }, [blocks]);
 
-            return (
-              <SentenceSpan
-                key={sentence.id}
-                sentence={sentence}
-                index={globalIndex}
-                state={state}
-                isHighlighted={isActive}
-                highlightedWordIndex={isActive ? highlightedWordIndex : null}
-                timestampSource={isActive ? highlightTimestampSource : null}
-                onClick={() => handleClick(globalIndex)}
-              />
-            );
-          })}
-        </BlockContainer>
-      ))}
-    </div>
+  // Memoized itemContent callback with stable dependencies
+  // Only re-creates when essential dependencies change
+  // This prevents unnecessary re-renders of off-screen items
+  const itemContent = useCallback((index: number) => {
+    const block = blocks[index];
+    if (!block) return null;
+
+    return (
+      <BlockContainer
+        type={block.type}
+        level={block.level}
+        isFirst={index === 0}
+      >
+        {block.sentences.map(({ sentence, globalIndex }) => {
+          const isActive = highlightedSentenceId === sentence.id;
+
+          return (
+            <SentenceWithState
+              key={sentence.id}
+              sentence={sentence}
+              globalIndex={globalIndex}
+              isActive={isActive}
+              highlightedWordIndex={highlightedWordIndex}
+              timestampSource={highlightTimestampSource}
+              onClick={() => handleClick(globalIndex)}
+            />
+          );
+        })}
+      </BlockContainer>
+    );
+  }, [
+    blocks,
+    highlightedSentenceId,
+    highlightedWordIndex,
+    highlightTimestampSource,
+    handleClick
+  ]);
+
+  return (
+    <Virtuoso
+      useWindowScroll
+      totalCount={blocks.length}
+      overscan={2}
+      computeItemKey={computeItemKey}
+      itemContent={itemContent}
+      components={{
+        List: ({ children, ...props }) => (
+          <div {...props} className="leading-relaxed prose-blocks">
+            {children}
+          </div>
+        )
+      }}
+    />
   );
 }

@@ -1,12 +1,11 @@
 'use client';
 
-import { memo, useCallback, useMemo, useState } from 'react';
-import { SentenceAudioState } from '@/store/sentenceStateStore';
+import { memo, useCallback, useMemo, useRef, useState } from 'react';
+import { SentenceAudioState, useDebouncedSentenceStates } from '@/store/sentenceStateStore';
 
 interface TimelineProps {
   totalSentences: number;
   currentIndex: number;
-  sentenceStates: Record<string, SentenceAudioState>;
   sentenceIds: string[];
   asrCompletedIds: Set<string>;  // Sentences with ASR-refined timestamps
   onSeek: (index: number) => void;
@@ -15,16 +14,45 @@ interface TimelineProps {
   enableASR?: boolean;  // Whether ASR is enabled (hides STT stat when false)
 }
 
+// Optimization #4: Segment colors with opacity baked in for CSS gradient
+// These are fixed colors that match the theme - CSS variables don't work well in gradients
+const SEGMENT_COLORS = {
+  pending: 'rgba(102, 102, 102, 0.2)',      // --text-muted at 0.2
+  preloading: 'rgba(249, 115, 22, 0.25)',   // orange-500 at 0.25
+  ready: 'rgba(249, 115, 22, 0.6)',         // orange-500 at 0.6
+  asr: 'rgba(110, 231, 183, 0.7)',          // --highlight-word-asr at 0.7
+  played: 'rgba(168, 85, 247, 0.5)',        // --accent-purple at 0.5
+  active: 'rgba(168, 85, 247, 1)',          // --accent-purple at 1.0
+  playing: 'rgba(168, 85, 247, 1)',         // same as active
+};
+
 function formatTime(seconds: number): string {
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
+/**
+ * Get the color for a segment based on its state
+ * Priority: active > played > asr > ready > preloading > pending
+ */
+function getSegmentColor(
+  state: SentenceAudioState | undefined,
+  index: number,
+  currentIndex: number,
+  hasASR: boolean
+): string {
+  if (index === currentIndex) return SEGMENT_COLORS.active;
+  if (index < currentIndex) return SEGMENT_COLORS.played;
+  if (hasASR && (state === 'ready' || state === 'playing')) return SEGMENT_COLORS.asr;
+  if (state === 'ready') return SEGMENT_COLORS.ready;
+  if (state === 'preloading') return SEGMENT_COLORS.preloading;
+  return SEGMENT_COLORS.pending;
+}
+
 export const Timeline = memo(function Timeline({
   totalSentences,
   currentIndex,
-  sentenceStates,
   sentenceIds,
   asrCompletedIds,
   onSeek,
@@ -32,9 +60,11 @@ export const Timeline = memo(function Timeline({
   currentTime = 0,
   enableASR = false
 }: TimelineProps) {
-  // Current playback position as percentage
-  const playProgress = totalSentences > 0 ? ((currentIndex + 1) / totalSentences) * 100 : 0;
+  // Optimization #5: Use debounced sentence states to reduce re-renders during rapid preloading
+  // This reduces render frequency from ~20/sec to ~6/sec while still providing responsive feedback
+  const sentenceStates = useDebouncedSentenceStates(150);
 
+  const trackRef = useRef<HTMLDivElement>(null);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
   // Calculate preload progress - count sentences that are ready, preloading, played, or playing
@@ -72,112 +102,97 @@ export const Timeline = memo(function Timeline({
     return { asrCount, asrPercentage };
   }, [asrCompletedIds, sentenceIds, totalSentences]);
 
-  const remainingTime = estimatedDuration - currentTime;
+  // Optimization #4: Build CSS gradient from sentence states
+  // This replaces 500+ DOM elements with a single gradient
+  const gradientBackground = useMemo(() => {
+    if (totalSentences === 0) return 'transparent';
 
-  const handleTrackClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const stops: string[] = [];
+    let lastColor = '';
+    let runStart = 0;
+
+    // Build gradient by coalescing adjacent segments with same color
+    for (let i = 0; i < totalSentences; i++) {
+      const id = sentenceIds[i];
+      const state = sentenceStates[id];
+      const hasASR = asrCompletedIds.has(id);
+      const color = getSegmentColor(state, i, currentIndex, hasASR);
+
+      if (color !== lastColor) {
+        if (lastColor) {
+          // End previous color run
+          const endPct = (i / totalSentences) * 100;
+          stops.push(`${lastColor} ${runStart.toFixed(2)}% ${endPct.toFixed(2)}%`);
+        }
+        lastColor = color;
+        runStart = (i / totalSentences) * 100;
+      }
+    }
+
+    // Add final color run
+    if (lastColor) {
+      stops.push(`${lastColor} ${runStart.toFixed(2)}% 100%`);
+    }
+
+    return `linear-gradient(to right, ${stops.join(', ')})`;
+  }, [sentenceIds, sentenceStates, asrCompletedIds, currentIndex, totalSentences]);
+
+  // Current sentence marker position
+  const markerPosition = totalSentences > 0
+    ? ((currentIndex + 0.5) / totalSentences) * 100
+    : 0;
+
+  // Calculate index from mouse position
+  const getIndexFromEvent = useCallback((e: React.MouseEvent<HTMLDivElement>): number => {
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const percentage = x / rect.width;
-    const targetIndex = Math.floor(percentage * totalSentences);
+    return Math.floor(percentage * totalSentences);
+  }, [totalSentences]);
+
+  const handleTrackClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const targetIndex = getIndexFromEvent(e);
     onSeek(Math.max(0, Math.min(targetIndex, totalSentences - 1)));
-  }, [totalSentences, onSeek]);
+  }, [getIndexFromEvent, onSeek, totalSentences]);
 
-  // Calculate visible markers - show subset for performance
-  const visibleMarkers = useMemo(() => {
-    if (totalSentences <= 50) {
-      // Show all markers if few sentences
-      return sentenceIds.map((id, index) => ({
-        id,
-        index,
-        position: ((index + 0.5) / totalSentences) * 100,
-        state: sentenceStates[id] || 'pending'
-      }));
+  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const index = getIndexFromEvent(e);
+    if (index >= 0 && index < totalSentences) {
+      setHoveredIndex(index);
     }
+  }, [getIndexFromEvent, totalSentences]);
 
-    // For many sentences, show sampled markers plus current and nearby
-    const markers: { id: string; index: number; position: number; state: SentenceAudioState }[] = [];
-    const step = Math.ceil(totalSentences / 30);
-
-    for (let i = 0; i < totalSentences; i += step) {
-      const id = sentenceIds[i];
-      markers.push({
-        id,
-        index: i,
-        position: ((i + 0.5) / totalSentences) * 100,
-        state: sentenceStates[id] || 'pending'
-      });
-    }
-
-    // Always include current and adjacent
-    const nearby = [currentIndex - 1, currentIndex, currentIndex + 1].filter(
-      i => i >= 0 && i < totalSentences
-    );
-
-    nearby.forEach(i => {
-      if (!markers.some(m => m.index === i)) {
-        const id = sentenceIds[i];
-        markers.push({
-          id,
-          index: i,
-          position: ((i + 0.5) / totalSentences) * 100,
-          state: sentenceStates[id] || 'pending'
-        });
-      }
-    });
-
-    return markers.sort((a, b) => a.index - b.index);
-  }, [totalSentences, sentenceIds, sentenceStates, currentIndex]);
-
-  const getMarkerClass = (state: SentenceAudioState, index: number) => {
-    if (index === currentIndex) return 'playing';
-    switch (state) {
-      case 'played': return 'played';
-      case 'ready': return 'ready';
-      case 'preloading': return 'preloading';
-      case 'playing': return 'playing';
-      default: return 'pending';
-    }
-  };
+  const handleMouseLeave = useCallback(() => {
+    setHoveredIndex(null);
+  }, []);
 
   return (
     <div className="timeline-container">
       <div
+        ref={trackRef}
         className={`timeline-track segmented ${totalSentences > 60 ? 'dense' : ''}`}
         role="slider"
         aria-valuemin={0}
         aria-valuemax={totalSentences}
         aria-valuenow={currentIndex}
         tabIndex={0}
-        onMouseLeave={() => setHoveredIndex(null)}
+        onClick={handleTrackClick}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={handleMouseLeave}
       >
-        {sentenceIds.map((id, index) => {
-          const state = sentenceStates[id] || 'pending';
-          const isPlayed = index < currentIndex;
-          const isCurrent = index === currentIndex;
-          const hasASR = asrCompletedIds.has(id);
-
-          // Priority: active > played > asr > ready > preloading > pending
-          let segmentClass = 'timeline-segment';
-          if (isCurrent) segmentClass += ' active';
-          else if (isPlayed) segmentClass += ' played';
-          else if (hasASR && (state === 'ready' || state === 'playing')) segmentClass += ' asr';
-          else if (state === 'ready') segmentClass += ' ready';
-          else if (state === 'preloading') segmentClass += ' preloading';
-          else segmentClass += ' pending';
-
-          return (
+        {/* Optimization #4: Single gradient div instead of 500+ segment divs */}
+        <div
+          className="timeline-gradient"
+          style={{ background: gradientBackground }}
+        >
+          {/* Current sentence marker */}
+          {totalSentences > 0 && (
             <div
-              key={id}
-              className={segmentClass}
-              onClick={(e) => {
-                e.stopPropagation();
-                onSeek(index);
-              }}
-              onMouseEnter={() => setHoveredIndex(index)}
-              title={undefined} // Disable native title to use custom tooltip
+              className="timeline-gradient-marker"
+              style={{ left: `${markerPosition}%` }}
             />
-          );
-        })}
+          )}
+        </div>
       </div>
 
       {hoveredIndex !== null && (

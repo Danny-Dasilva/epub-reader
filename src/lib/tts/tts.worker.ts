@@ -68,6 +68,7 @@ export interface WorkerCompleteResponse {
   type: 'complete';
   id: string;
   wav: Float32Array;
+  wavBuffer: ArrayBuffer;  // Optimization #3: Pre-encoded WAV buffer (avoids main thread encoding)
   duration: number;
   sampleRate: number;
 }
@@ -97,6 +98,50 @@ export type WorkerOutMessage =
   | WorkerCancelledResponse
   | WorkerErrorResponse
   | WorkerLoadingResponse;
+
+/**
+ * Optimization #3: WAV encoding in worker (avoids main thread blocking)
+ * Converts Float32Array PCM to WAV ArrayBuffer
+ */
+function float32ToWav(audioData: Float32Array, sampleRate: number): ArrayBuffer {
+  const dataSize = audioData.length * 2;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  const byteRate = sampleRate * numChannels * bitsPerSample / 8;
+  const blockAlign = numChannels * bitsPerSample / 8;
+
+  // Write WAV header
+  const writeString = (offset: number, string: string) => {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i));
+    }
+  };
+
+  writeString(0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(8, 'WAVE');
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
+  writeString(36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  // Direct Float32 → Int16 conversion
+  const int16View = new Int16Array(buffer, 44);
+  for (let i = 0; i < audioData.length; i++) {
+    const clamped = Math.max(-1.0, Math.min(1.0, audioData[i]));
+    int16View[i] = Math.floor(clamped * 32767);
+  }
+
+  return buffer;
+}
 
 // Worker state
 let workerBaseUrl: string = '';
@@ -555,14 +600,18 @@ self.onmessage = async (event: MessageEvent<WorkerInMessage>) => {
           // Was cancelled
           self.postMessage({ type: 'cancelled', id: message.id } as WorkerCancelledResponse);
         } else {
-          // Transfer the Float32Array for efficiency
+          // Optimization #3: Encode WAV in worker to avoid main thread blocking
+          const wavBuffer = float32ToWav(result.wav, sampleRate);
+
+          // Transfer both buffers for efficiency (zero-copy transfer)
           self.postMessage({
             type: 'complete',
             id: message.id,
             wav: result.wav,
+            wavBuffer,
             duration: result.duration,
             sampleRate
-          } as WorkerCompleteResponse, { transfer: [result.wav.buffer] });
+          } as WorkerCompleteResponse, { transfer: [result.wav.buffer, wavBuffer] });
         }
       } catch (error) {
         self.postMessage({

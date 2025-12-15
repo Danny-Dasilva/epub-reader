@@ -18,6 +18,7 @@
     "parakeet.js": "^0.0.3",
     "react": "19.2.0",
     "react-dom": "19.2.0",
+    "react-virtuoso": "^4.7.11",
     "sbd": "^1.0.19",
     "zustand": "^5.0.8"
   },
@@ -29,6 +30,6 @@
     "eslint": "^9",
     "eslint-config-next": "16.0.10",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5.9.3"
   }
 }
