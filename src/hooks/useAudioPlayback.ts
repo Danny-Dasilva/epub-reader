@@ -4,7 +4,7 @@ import { useEffect, useRef, useCallback, useState, useTransition } from 'react';
 import { useNavigationStore } from '@/store/navigationStore';
 import { usePlaybackStore } from '@/store/playbackStore';
 import { useTTSStore } from '@/store/ttsStore';
-import { useSentenceStateStore, setHighlight, clearHighlight } from '@/store/sentenceStateStore';
+import { useSentenceStateStore, setHighlight, clearHighlight, setAudioPosition, clearAudioPosition } from '@/store/sentenceStateStore';
 import {
   AudioSyncService,
   initializeAudioSyncService,
@@ -197,6 +197,10 @@ export function useAudioPlayback() {
           if (event.sentenceId && event.wordIndex !== undefined) {
             setHighlight(event.sentenceId, event.wordIndex, event.timestampSource);
           }
+          // Update audio position for real-time timestamp display
+          if (event.currentTime !== undefined) {
+            setAudioPosition(event.currentTime);
+          }
           break;
 
         case 'sentenceStart':
@@ -262,6 +266,7 @@ export function useAudioPlayback() {
           // Playback stopped (end of chapter or explicit stop)
           setIsPlaying(false);
           updateSessionSentence('');
+          clearAudioPosition();
           break;
 
         case 'error':
@@ -401,6 +406,7 @@ export function useAudioPlayback() {
 
     // Clear highlights and states
     clearHighlight();
+    clearAudioPosition();
     clearSentenceStates();
     clearASRCompleted();
 

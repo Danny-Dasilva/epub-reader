@@ -12,6 +12,7 @@ interface TimelineProps {
   estimatedDuration?: number; // in seconds
   currentTime?: number; // in seconds
   enableASR?: boolean;  // Whether ASR is enabled (hides STT stat when false)
+  bookProgress?: number; // 0-100 percentage of book completion
 }
 
 // Optimization #4: Segment colors with opacity baked in for CSS gradient
@@ -58,7 +59,8 @@ export const Timeline = memo(function Timeline({
   onSeek,
   estimatedDuration = 0,
   currentTime = 0,
-  enableASR = false
+  enableASR = false,
+  bookProgress = 0
 }: TimelineProps) {
   // Optimization #5: Use debounced sentence states to reduce re-renders during rapid preloading
   // This reduces render frequency from ~20/sec to ~6/sec while still providing responsive feedback
@@ -70,25 +72,23 @@ export const Timeline = memo(function Timeline({
   // Calculate preload progress - count sentences that are ready, preloading, played, or playing
   const preloadStats = useMemo(() => {
     let preloadedCount = 0;
-    let playedCount = 0;
 
     sentenceIds.forEach((id) => {
       const state = sentenceStates[id];
       // Only count sentences with COMPLETED TTS generation (not 'preloading' which is just queued)
-      if (state === 'ready' || state === 'playing') {
+      if (state === 'ready' || state === 'playing' || state === 'played') {
         preloadedCount++;
-      }
-      if (state === 'played') {
-        playedCount++;
-        preloadedCount++; // played also counts as preloaded
       }
     });
 
     const preloadPercentage = totalSentences > 0 ? (preloadedCount / totalSentences) * 100 : 0;
-    const playedPercentage = totalSentences > 0 ? (playedCount / totalSentences) * 100 : 0;
 
-    return { preloadedCount, playedCount, preloadPercentage, playedPercentage };
+    return { preloadedCount, preloadPercentage };
   }, [sentenceStates, sentenceIds, totalSentences]);
+
+  // Position-based played count - all sentences before currentIndex are considered "played"
+  const playedCount = currentIndex;
+  const playedPercentage = totalSentences > 0 ? (playedCount / totalSentences) * 100 : 0;
 
   // Calculate ASR progress - sentences with refined word timestamps
   const asrStats = useMemo(() => {
@@ -101,6 +101,21 @@ export const Timeline = memo(function Timeline({
     const asrPercentage = totalSentences > 0 ? (asrCount / totalSentences) * 100 : 0;
     return { asrCount, asrPercentage };
   }, [asrCompletedIds, sentenceIds, totalSentences]);
+
+  // Get state info for a sentence (used for tooltip state indicator)
+  const getSentenceStateInfo = useCallback((index: number): { color: string; label: string } | null => {
+    if (index < 0 || index >= sentenceIds.length) return null;
+    const id = sentenceIds[index];
+    const state = sentenceStates[id];
+    const hasASR = asrCompletedIds.has(id);
+
+    if (index === currentIndex) return { color: SEGMENT_COLORS.active, label: 'Playing' };
+    if (index < currentIndex) return { color: SEGMENT_COLORS.played, label: 'Played' };
+    if (hasASR) return { color: SEGMENT_COLORS.asr, label: 'ASR Ready' };
+    if (state === 'ready' || state === 'playing') return { color: SEGMENT_COLORS.ready, label: 'TTS Ready' };
+    if (state === 'preloading') return { color: SEGMENT_COLORS.preloading, label: 'Loading' };
+    return { color: SEGMENT_COLORS.pending, label: 'Pending' };
+  }, [sentenceIds, sentenceStates, asrCompletedIds, currentIndex]);
 
   // Optimization #4: Build CSS gradient from sentence states
   // This replaces 500+ DOM elements with a single gradient
@@ -195,26 +210,41 @@ export const Timeline = memo(function Timeline({
         </div>
       </div>
 
-      {hoveredIndex !== null && (
-        <div
-          className="timeline-tooltip"
-          style={{
-            left: `${((hoveredIndex + 0.5) / totalSentences) * 100}%`,
-            transform: 'translateX(-50%)'
-          }}
-        >
-          <div className="tooltip-content">
-            <span className="tooltip-label">Sentence</span>
-            <span className="tooltip-value">{hoveredIndex + 1} <span className="tooltip-separator">/</span> {totalSentences}</span>
+      {hoveredIndex !== null && (() => {
+        const stateInfo = getSentenceStateInfo(hoveredIndex);
+        return (
+          <div
+            className="timeline-tooltip"
+            style={{
+              left: `${((hoveredIndex + 0.5) / totalSentences) * 100}%`,
+              transform: 'translateX(-50%)'
+            }}
+          >
+            <div className="tooltip-content">
+              {stateInfo && (
+                <span
+                  className="tooltip-state-dot"
+                  style={{ background: stateInfo.color }}
+                />
+              )}
+              <span className="tooltip-label">{stateInfo?.label ?? 'Sentence'}</span>
+              <span className="tooltip-separator">•</span>
+              <span className="tooltip-value">{hoveredIndex + 1} / {totalSentences}</span>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       <div className="timeline-stats">
         <div className="stat-item played">
           <span className="stat-label">Played</span>
           <span className="stat-value">
-            {preloadStats.playedCount}/{totalSentences} ({Math.round(preloadStats.playedPercentage)}%)
+            {playedCount}/{totalSentences} ({Math.round(playedPercentage)}%)
+          </span>
+        </div>
+        <div className="stat-item time">
+          <span className="stat-value">
+            {formatTime(currentTime)} / ~{formatTime(estimatedDuration)}
           </span>
         </div>
         <div className="stat-item ready">
@@ -231,6 +261,12 @@ export const Timeline = memo(function Timeline({
             </span>
           </div>
         )}
+        <div className="stat-item book">
+          <span className="stat-label">Book</span>
+          <span className="stat-value">
+            {bookProgress.toFixed(1)}%
+          </span>
+        </div>
       </div>
     </div>
   );
