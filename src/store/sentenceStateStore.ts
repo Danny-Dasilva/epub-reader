@@ -81,6 +81,62 @@ export const clearHighlight = (): void => {
 };
 
 // ============================================================================
+// NON-REACTIVE AUDIO POSITION STATE
+// ============================================================================
+// Tracks real-time audio position within the current sentence for smooth
+// timestamp updates. Updated 60x/second during playback via wordChange events.
+// The page component adds this to the sentence-based estimate for total time.
+// ============================================================================
+
+interface AudioPosition {
+  withinSentenceTime: number;   // Current position within sentence (from audio element)
+  lastUpdate: number;           // Timestamp of last update (for staleness detection)
+}
+
+let audioPosition: AudioPosition = {
+  withinSentenceTime: 0,
+  lastUpdate: 0
+};
+
+type AudioPositionListener = (position: AudioPosition) => void;
+const audioPositionListeners = new Set<AudioPositionListener>();
+
+/**
+ * Set the current audio position within the sentence (non-reactive - no re-renders)
+ * Called 60x/second during audio playback
+ */
+export const setAudioPosition = (withinSentenceTime: number): void => {
+  audioPosition = {
+    withinSentenceTime,
+    lastUpdate: Date.now()
+  };
+
+  // Notify all subscribers
+  audioPositionListeners.forEach(fn => fn(audioPosition));
+};
+
+/**
+ * Get the current audio position without subscribing
+ */
+export const getAudioPosition = (): AudioPosition => audioPosition;
+
+/**
+ * Subscribe to audio position changes
+ * Returns unsubscribe function
+ */
+export const subscribeToAudioPosition = (listener: AudioPositionListener): (() => void) => {
+  audioPositionListeners.add(listener);
+  return () => audioPositionListeners.delete(listener);
+};
+
+/**
+ * Clear audio position state
+ */
+export const clearAudioPosition = (): void => {
+  audioPosition = { withinSentenceTime: 0, lastUpdate: 0 };
+};
+
+// ============================================================================
 // REACTIVE SENTENCE LIFECYCLE STATE (Zustand Store)
 // ============================================================================
 // This state changes rarely (pending → preloading → ready → playing → played)

@@ -682,7 +682,7 @@ body {
   cursor: default;
   position: relative;
   width: 100%;
-  margin-top: 4px;
+  margin-top: 10px;
   /* Balanced vertical spacing for rounded corners */
 }
 
@@ -804,8 +804,11 @@ body {
   color: var(--border);
 }
 
-.tooltip-separator {
-  color: var(--border);
+.tooltip-state-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 
 /* Timeline Stats */
@@ -849,6 +852,15 @@ body {
 
 .stat-item.asr .stat-value {
   color: var(--highlight-word-asr);
+}
+
+.stat-item.time .stat-value {
+  color: var(--text-muted);
+  opacity: 0.9;
+}
+
+.stat-item.book .stat-value {
+  color: var(--color-gold, #d4a574);
 }
 
 /* Playback Controls - Mobile Optimized */

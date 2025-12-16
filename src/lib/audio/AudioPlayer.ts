@@ -49,8 +49,10 @@ export class AudioPlayer {
       // Create the two audio players
       this.playerA = new Audio();
       this.playerA.preservesPitch = true;
+      this.playerA.playbackRate = this.playbackRate;
       this.playerB = new Audio();
       this.playerB.preservesPitch = true;
+      this.playerB.playbackRate = this.playbackRate;
 
       // Connect both to gain node (for volume control)
       this.mediaSourceA = this.audioContext.createMediaElementSource(this.playerA);

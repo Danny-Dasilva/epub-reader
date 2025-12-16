@@ -2,13 +2,13 @@
 
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ParsedBook } from '@/lib/epub';
+import { ParsedBook, getReadingProgress } from '@/lib/epub';
 import { calculatePagination, PaginationData, getPageForSentence } from '@/lib/epub/pagination';
 import { useNavigationStore } from '@/store/navigationStore';
 import { usePlaybackStore } from '@/store/playbackStore';
 import { useUIStore } from '@/store/uiStore';
 import { useTTSStore } from '@/store/ttsStore';
-import { useSentenceStateStore, subscribeToHighlight, setHighlight, Highlight } from '@/store/sentenceStateStore';
+import { useSentenceStateStore, subscribeToHighlight, setHighlight, Highlight, getAudioPosition } from '@/store/sentenceStateStore';
 import { useLibraryStore } from '@/store/libraryStore';
 import { useReadingProgressStore } from '@/store/readingProgressStore';
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
@@ -257,6 +257,44 @@ export default function ReaderPage() {
     const sentencesRead = currentSentenceIndex;
     return estimateReadingTime(sentencesRead);
   }, [currentChapter, currentSentenceIndex]);
+
+  // Real-time audio position tracking (updates during playback)
+  const [audioOffset, setAudioOffset] = useState(0);
+
+  useEffect(() => {
+    if (!isPlaying) {
+      setAudioOffset(0);
+      return;
+    }
+
+    let rafId: number;
+    let lastUpdate = 0;
+
+    const updatePosition = () => {
+      const now = Date.now();
+      // Throttle to ~10fps for UI updates (every 100ms)
+      if (now - lastUpdate >= 100) {
+        const pos = getAudioPosition();
+        if (pos.lastUpdate > 0) {
+          setAudioOffset(pos.withinSentenceTime);
+          lastUpdate = now;
+        }
+      }
+      rafId = requestAnimationFrame(updatePosition);
+    };
+
+    rafId = requestAnimationFrame(updatePosition);
+    return () => cancelAnimationFrame(rafId);
+  }, [isPlaying]);
+
+  // Display time: sentence-based time + real-time audio offset when playing
+  const displayTime = isPlaying ? currentTime + audioOffset : currentTime;
+
+  // Calculate book progress percentage
+  const bookProgress = useMemo(() => {
+    if (!book) return 0;
+    return getReadingProgress(book, currentChapterIndex, currentSentenceIndex);
+  }, [book, currentChapterIndex, currentSentenceIndex]);
 
   // Get current page from pagination data
   const currentPageInfo = useMemo(() => {
@@ -520,8 +558,9 @@ export default function ReaderPage() {
             asrCompletedIds={asrCompletedIds}
             onSeek={handleTimelineSeek}
             estimatedDuration={estimatedDuration}
-            currentTime={currentTime}
+            currentTime={displayTime}
             enableASR={enableASR}
+            bookProgress={bookProgress}
           />
 
           {/* Playback Controls */}
