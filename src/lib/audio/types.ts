@@ -53,6 +53,7 @@ export interface PlaybackEvent {
   sentenceId?: string;
   wordIndex?: number;
   currentTime?: number;
+  duration?: number;  // Audio file duration (for sentenceEnd events)
   timestampSource?: 'estimated' | 'asr';  // Track if using accurate ASR timestamps
   error?: Error;
 }

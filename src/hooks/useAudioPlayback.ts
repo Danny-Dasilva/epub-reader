@@ -4,7 +4,7 @@ import { useEffect, useRef, useCallback, useState, useTransition } from 'react';
 import { useNavigationStore } from '@/store/navigationStore';
 import { usePlaybackStore } from '@/store/playbackStore';
 import { useTTSStore } from '@/store/ttsStore';
-import { useSentenceStateStore, setHighlight, clearHighlight, setAudioPosition, clearAudioPosition } from '@/store/sentenceStateStore';
+import { useSentenceStateStore, setHighlight, clearHighlight, setAudioPosition, clearAudioPosition, addToPlayedTime } from '@/store/sentenceStateStore';
 import {
   AudioSyncService,
   initializeAudioSyncService,
@@ -224,6 +224,11 @@ export function useAudioPlayback() {
           // Optimization #7: Batch state updates to reduce React reconciliation during transitions
           // Critical path (navigation) must be synchronous for gapless audio
           // Non-critical visual updates are deferred to microtask
+
+          // Add completed sentence duration to cumulative time (for accurate timestamp display)
+          if (event.duration !== undefined && event.duration > 0) {
+            addToPlayedTime(event.duration);
+          }
 
           const sentenceId = event.sentenceId;
           const isGapless = service?.isGaplessMode() ?? false;

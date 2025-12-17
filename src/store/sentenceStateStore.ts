@@ -83,17 +83,19 @@ export const clearHighlight = (): void => {
 // ============================================================================
 // NON-REACTIVE AUDIO POSITION STATE
 // ============================================================================
-// Tracks real-time audio position within the current sentence for smooth
-// timestamp updates. Updated 60x/second during playback via wordChange events.
-// The page component adds this to the sentence-based estimate for total time.
+// Tracks real-time audio position for smooth timestamp updates.
+// Uses cumulative time tracking to avoid backward jumps at sentence boundaries.
+// Updated 60x/second during playback via wordChange events.
 // ============================================================================
 
 interface AudioPosition {
+  cumulativeTime: number;       // Total time of sentences completed before current
   withinSentenceTime: number;   // Current position within sentence (from audio element)
   lastUpdate: number;           // Timestamp of last update (for staleness detection)
 }
 
 let audioPosition: AudioPosition = {
+  cumulativeTime: 0,
   withinSentenceTime: 0,
   lastUpdate: 0
 };
@@ -107,12 +109,38 @@ const audioPositionListeners = new Set<AudioPositionListener>();
  */
 export const setAudioPosition = (withinSentenceTime: number): void => {
   audioPosition = {
+    ...audioPosition,
     withinSentenceTime,
     lastUpdate: Date.now()
   };
 
   // Notify all subscribers
   audioPositionListeners.forEach(fn => fn(audioPosition));
+};
+
+/**
+ * Add completed sentence duration to cumulative time
+ * Called when a sentence finishes playing
+ */
+export const addToPlayedTime = (duration: number): void => {
+  audioPosition = {
+    ...audioPosition,
+    cumulativeTime: audioPosition.cumulativeTime + duration,
+    lastUpdate: Date.now()
+  };
+};
+
+/**
+ * Set the cumulative time to a specific value
+ * Called when seeking to initialize time based on position
+ */
+export const setCumulativeTime = (time: number): void => {
+  audioPosition = {
+    ...audioPosition,
+    cumulativeTime: time,
+    withinSentenceTime: 0,
+    lastUpdate: Date.now()
+  };
 };
 
 /**
@@ -130,10 +158,10 @@ export const subscribeToAudioPosition = (listener: AudioPositionListener): (() =
 };
 
 /**
- * Clear audio position state
+ * Clear audio position state (resets both cumulative and within-sentence time)
  */
 export const clearAudioPosition = (): void => {
-  audioPosition = { withinSentenceTime: 0, lastUpdate: 0 };
+  audioPosition = { cumulativeTime: 0, withinSentenceTime: 0, lastUpdate: 0 };
 };
 
 // ============================================================================

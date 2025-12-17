@@ -8,7 +8,7 @@ import { useNavigationStore } from '@/store/navigationStore';
 import { usePlaybackStore } from '@/store/playbackStore';
 import { useUIStore } from '@/store/uiStore';
 import { useTTSStore } from '@/store/ttsStore';
-import { useSentenceStateStore, subscribeToHighlight, setHighlight, Highlight, getAudioPosition } from '@/store/sentenceStateStore';
+import { useSentenceStateStore, subscribeToHighlight, setHighlight, Highlight, getAudioPosition, setCumulativeTime } from '@/store/sentenceStateStore';
 import { useLibraryStore } from '@/store/libraryStore';
 import { useReadingProgressStore } from '@/store/readingProgressStore';
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
@@ -259,11 +259,28 @@ export default function ReaderPage() {
   }, [currentChapter, currentSentenceIndex]);
 
   // Real-time audio position tracking (updates during playback)
-  const [audioOffset, setAudioOffset] = useState(0);
+  // Uses cumulative time to avoid backward jumps at sentence boundaries
+  const [realTimePosition, setRealTimePosition] = useState(0);
+
+  // Initialize cumulative time when starting playback or seeking
+  // This ensures timestamp reflects time for sentences before current position
+  useEffect(() => {
+    if (isPlaying) {
+      // Set cumulative time to estimate for sentences before current
+      const estimatedTimeToCurrentSentence = estimateReadingTime(currentSentenceIndex);
+      const currentPos = getAudioPosition();
+
+      // Only update if cumulative is less than expected (e.g., when seeking forward)
+      // or if we're just starting (cumulative is 0 and we're not at sentence 0)
+      if (currentPos.cumulativeTime < estimatedTimeToCurrentSentence) {
+        setCumulativeTime(estimatedTimeToCurrentSentence);
+        setRealTimePosition(estimatedTimeToCurrentSentence);
+      }
+    }
+  }, [isPlaying, currentSentenceIndex]);
 
   useEffect(() => {
     if (!isPlaying) {
-      setAudioOffset(0);
       return;
     }
 
@@ -276,7 +293,8 @@ export default function ReaderPage() {
       if (now - lastUpdate >= 100) {
         const pos = getAudioPosition();
         if (pos.lastUpdate > 0) {
-          setAudioOffset(pos.withinSentenceTime);
+          // Use cumulative time + current sentence position for smooth, monotonic timestamps
+          setRealTimePosition(pos.cumulativeTime + pos.withinSentenceTime);
           lastUpdate = now;
         }
       }
@@ -287,8 +305,8 @@ export default function ReaderPage() {
     return () => cancelAnimationFrame(rafId);
   }, [isPlaying]);
 
-  // Display time: sentence-based time + real-time audio offset when playing
-  const displayTime = isPlaying ? currentTime + audioOffset : currentTime;
+  // Display time: use real-time cumulative position when playing, sentence-based estimate when paused
+  const displayTime = isPlaying ? realTimePosition : currentTime;
 
   // Calculate book progress percentage
   const bookProgress = useMemo(() => {
