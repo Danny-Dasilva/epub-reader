@@ -163,7 +163,8 @@ export class AudioPlayer {
         const sentenceId = this.currentSentence?.sentenceId || sentence.sentenceId;
         this.emit({
           type: 'sentenceEnd',
-          sentenceId
+          sentenceId,
+          duration: player.duration  // Actual audio file duration for cumulative tracking
         });
 
         // If next wasn't triggered by timeupdate (short sentences), handle here
@@ -291,7 +292,8 @@ export class AudioPlayer {
     newActive.onended = () => {
       this.emit({
         type: 'sentenceEnd',
-        sentenceId: nextSentence.sentenceId
+        sentenceId: nextSentence.sentenceId,
+        duration: newActive.duration  // Actual audio file duration for cumulative tracking
       });
 
       if (!this.nextStartTriggered && this.nextSentenceQueued) {
