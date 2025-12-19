@@ -6,6 +6,7 @@
 
 import * as ort from 'onnxruntime-web';
 import { preprocessText } from './textPreprocessor';
+import { VoiceStyleManager } from './VoiceStyleManager';
 
 // Worker message types
 export interface WorkerInitMessage {
@@ -13,6 +14,7 @@ export interface WorkerInitMessage {
   baseUrl: string;  // e.g., 'http://localhost:3000'
   onnxDir: string;
   voiceStylePath: string;
+  enableLazyVoiceLoading?: boolean;  // Enable lazy voice loading feature
 }
 
 export interface WorkerSynthesizeMessage {
@@ -44,13 +46,24 @@ export interface WorkerSetSpeedMessage {
   speed: number;
 }
 
+export interface WorkerSynthesizeStreamingMessage {
+  type: 'synthesizeStreaming';
+  id: string;
+  text: string;
+  speed: number;
+  totalSteps: number;
+  chunkDurationMs: number;  // Target chunk duration in milliseconds (~500ms)
+  preprocessedText?: string;
+}
+
 export type WorkerInMessage =
   | WorkerInitMessage
   | WorkerSynthesizeMessage
   | WorkerCancelMessage
   | WorkerCancelAllMessage
   | WorkerSetVoiceMessage
-  | WorkerSetSpeedMessage;
+  | WorkerSetSpeedMessage
+  | WorkerSynthesizeStreamingMessage;
 
 export interface WorkerReadyResponse {
   type: 'ready';
@@ -91,13 +104,22 @@ export interface WorkerLoadingResponse {
   total: number;
 }
 
+export interface WorkerChunkResponse {
+  type: 'chunk';
+  id: string;
+  audio: Float32Array;
+  chunkIndex: number;
+  isLast: boolean;
+}
+
 export type WorkerOutMessage =
   | WorkerReadyResponse
   | WorkerProgressResponse
   | WorkerCompleteResponse
   | WorkerCancelledResponse
   | WorkerErrorResponse
-  | WorkerLoadingResponse;
+  | WorkerLoadingResponse
+  | WorkerChunkResponse;
 
 /**
  * Optimization #3: WAV encoding in worker (avoids main thread blocking)
@@ -156,6 +178,9 @@ let sampleRate: number = 44100;
 let cancelledRequests: Set<string> = new Set();
 let isProcessing = false;
 let currentRequestId: string | null = null;
+let voiceStyleManager: VoiceStyleManager | null = null;
+let currentVoiceId: string = '';
+let enableLazyVoiceLoading: boolean = false;
 
 /**
  * Load JSON configuration
@@ -187,6 +212,16 @@ async function loadVoiceStyle(baseUrl: string, voiceStylePath: string): Promise<
     ttl: new ort.Tensor('float32', ttlData, data.style_ttl.dims),
     dp: new ort.Tensor('float32', dpData, data.style_dp.dims)
   };
+}
+
+/**
+ * Extract voice ID from voice style path
+ * @param voiceStylePath - Path like "/voice_styles/M1.json"
+ * @returns Voice ID like "M1"
+ */
+function extractVoiceId(voiceStylePath: string): string {
+  const match = voiceStylePath.match(/\/voice_styles\/(\w+)\.json$/);
+  return match?.[1] || 'M1';
 }
 
 
@@ -301,6 +336,204 @@ function sampleNoisyLatent(
   }
 
   return { xt, latentMask, latentDimVal, latentLen };
+}
+
+/**
+ * Calculate chunk boundaries based on phoneme durations
+ * @param durations - Array of phoneme durations in seconds
+ * @param targetChunkMs - Target chunk duration in milliseconds
+ * @returns Array of phoneme index ranges for each chunk
+ */
+function calculateChunkBoundaries(durations: number[], targetChunkMs: number): number[][] {
+  const chunks: number[][] = [];
+  let currentChunk: number[] = [];
+  let currentDurationMs = 0;
+
+  for (let i = 0; i < durations.length; i++) {
+    const phonemeDurationMs = durations[i] * 1000;
+    currentChunk.push(i);
+    currentDurationMs += phonemeDurationMs;
+
+    // Create chunk when we exceed target duration
+    if (currentDurationMs >= targetChunkMs) {
+      chunks.push(currentChunk);
+      currentChunk = [];
+      currentDurationMs = 0;
+    }
+  }
+
+  // Add remaining phonemes as final chunk
+  if (currentChunk.length > 0) {
+    chunks.push(currentChunk);
+  }
+
+  return chunks;
+}
+
+/**
+ * Synthesize text with streaming output (emits chunks as they're generated)
+ * Chunks text AFTER duration prediction but BEFORE expensive diffusion steps
+ */
+async function synthesizeStreaming(
+  text: string,
+  speed: number,
+  totalSteps: number,
+  chunkDurationMs: number,
+  requestId: string,
+  preprocessedText?: string
+): Promise<void> {
+  if (!dpSession || !textEncSession || !vectorEstSession || !vocoderSession || !voiceStyle || !textProcessor) {
+    throw new Error('TTS not initialized');
+  }
+
+  // Use preprocessed text if provided, otherwise preprocess now
+  const usePreprocessed = !!preprocessedText;
+  const textToProcess = usePreprocessed ? preprocessedText : text;
+  const textChunks = chunkText(textToProcess);
+
+  let globalChunkIndex = 0;
+
+  for (const textChunk of textChunks) {
+    // Check for cancellation before each text chunk
+    if (cancelledRequests.has(requestId)) {
+      return;
+    }
+
+    const { textIds, textMask } = processText([textChunk], textProcessor, usePreprocessed);
+    const bsz = 1;
+
+    const textIdsTensor = new ort.Tensor(
+      'int64',
+      new BigInt64Array(textIds.flat().map(x => BigInt(x))),
+      [bsz, textIds[0].length]
+    );
+
+    const textMaskTensor = new ort.Tensor(
+      'float32',
+      new Float32Array(textMask.flat(2)),
+      [bsz, 1, textMask[0][0].length]
+    );
+
+    // Step 1: Predict duration for entire text chunk (fast)
+    const dpOutputs = await dpSession.run({
+      text_ids: textIdsTensor,
+      style_dp: voiceStyle.dp,
+      text_mask: textMaskTensor
+    });
+    const duration = Array.from(dpOutputs.duration.data as Float32Array);
+    dpOutputs.duration.dispose?.();
+
+    // Apply speed adjustment
+    for (let i = 0; i < duration.length; i++) {
+      duration[i] /= speed;
+    }
+
+    // Step 2: Calculate chunk boundaries based on duration
+    const phonemeChunks = calculateChunkBoundaries(duration, chunkDurationMs);
+
+    // Step 3: Encode text once (reused for all chunks)
+    const textEncOutputs = await textEncSession.run({
+      text_ids: textIdsTensor,
+      style_ttl: voiceStyle.ttl,
+      text_mask: textMaskTensor
+    });
+    const textEmb = textEncOutputs.text_emb;
+    textIdsTensor.dispose?.();
+
+    // Step 4: Synthesize each chunk
+    for (let chunkIdx = 0; chunkIdx < phonemeChunks.length; chunkIdx++) {
+      // Check for cancellation between chunks
+      if (cancelledRequests.has(requestId)) {
+        textMaskTensor.dispose?.();
+        textEmb.dispose?.();
+        return;
+      }
+
+      const phonemeIndices = phonemeChunks[chunkIdx];
+      const chunkDurations = phonemeIndices.map(i => duration[i]);
+
+      // Sample noisy latent for this chunk
+      let { xt, latentMask, latentDimVal, latentLen } = sampleNoisyLatent(
+        chunkDurations,
+        sampleRate,
+        ttsConfig.ae.base_chunk_size,
+        ttsConfig.ttl.chunk_compress_factor,
+        ttsConfig.ttl.latent_dim
+      );
+
+      const latentMaskTensor = new ort.Tensor(
+        'float32',
+        new Float32Array(latentMask.flat(2)),
+        [bsz, 1, latentMask[0][0].length]
+      );
+
+      const totalStepTensor = new ort.Tensor('float32', new Float32Array([totalSteps]), [bsz]);
+
+      // Denoising loop for this chunk
+      for (let step = 0; step < totalSteps; step++) {
+        if (cancelledRequests.has(requestId)) {
+          latentMaskTensor.dispose?.();
+          totalStepTensor.dispose?.();
+          textMaskTensor.dispose?.();
+          textEmb.dispose?.();
+          return;
+        }
+
+        const currentStepTensor = new ort.Tensor('float32', new Float32Array([step]), [bsz]);
+        const xtTensor = new ort.Tensor('float32', xt, [bsz, latentDimVal, latentLen]);
+
+        const vectorEstOutputs = await vectorEstSession.run({
+          noisy_latent: xtTensor,
+          text_emb: textEmb,
+          style_ttl: voiceStyle.ttl,
+          latent_mask: latentMaskTensor,
+          text_mask: textMaskTensor,
+          current_step: currentStepTensor,
+          total_step: totalStepTensor
+        });
+
+        const denoisedData = vectorEstOutputs.denoised_latent.data as Float32Array;
+        xt.set(denoisedData);
+
+        currentStepTensor.dispose?.();
+        xtTensor.dispose?.();
+        vectorEstOutputs.denoised_latent.dispose?.();
+      }
+
+      // Final cancellation check before vocoder
+      if (cancelledRequests.has(requestId)) {
+        latentMaskTensor.dispose?.();
+        totalStepTensor.dispose?.();
+        textMaskTensor.dispose?.();
+        textEmb.dispose?.();
+        return;
+      }
+
+      // Generate waveform for this chunk
+      const finalXtTensor = new ort.Tensor('float32', xt, [bsz, latentDimVal, latentLen]);
+      const vocoderOutputs = await vocoderSession.run({ latent: finalXtTensor });
+      const wav = new Float32Array(vocoderOutputs.wav_tts.data as Float32Array);
+
+      finalXtTensor.dispose?.();
+      vocoderOutputs.wav_tts.dispose?.();
+      latentMaskTensor.dispose?.();
+      totalStepTensor.dispose?.();
+
+      // Emit chunk immediately (transferable for zero-copy)
+      const isLast = (chunkIdx === phonemeChunks.length - 1) && (textChunk === textChunks[textChunks.length - 1]);
+      self.postMessage({
+        type: 'chunk',
+        id: requestId,
+        audio: wav,
+        chunkIndex: globalChunkIndex++,
+        isLast
+      } as WorkerChunkResponse, { transfer: [wav.buffer] });
+    }
+
+    // Dispose text encoding tensors after processing all chunks for this text chunk
+    textMaskTensor.dispose?.();
+    textEmb.dispose?.();
+  }
 }
 
 /**
@@ -506,9 +739,10 @@ async function synthesize(
 /**
  * Initialize TTS models
  */
-async function initialize(baseUrl: string, onnxDir: string, voiceStylePath: string): Promise<'webgpu' | 'wasm'> {
+async function initialize(baseUrl: string, onnxDir: string, voiceStylePath: string, useLazyLoading: boolean = false): Promise<'webgpu' | 'wasm'> {
   // Store baseUrl for later use (e.g., voice changes)
   workerBaseUrl = baseUrl;
+  enableLazyVoiceLoading = useLazyLoading;
 
   // Configure ONNX wasm paths with absolute URL
   ort.env.wasm.wasmPaths = `${baseUrl}/onnx/`;
@@ -550,7 +784,19 @@ async function initialize(baseUrl: string, onnxDir: string, voiceStylePath: stri
   [dpSession, textEncSession, vectorEstSession, vocoderSession] = sessions;
 
   self.postMessage({ type: 'loading', modelName: 'Voice Style', current: 5, total: 5 } as WorkerLoadingResponse);
-  voiceStyle = await loadVoiceStyle(baseUrl, voiceStylePath);
+
+  // Use VoiceStyleManager if lazy loading is enabled
+  if (enableLazyVoiceLoading) {
+    voiceStyleManager = new VoiceStyleManager();
+    voiceStyleManager.setBaseUrl(baseUrl);
+
+    currentVoiceId = extractVoiceId(voiceStylePath);
+    voiceStyle = await voiceStyleManager.loadStyle(currentVoiceId);
+  } else {
+    // Legacy mode: load voice style directly
+    voiceStyle = await loadVoiceStyle(baseUrl, voiceStylePath);
+    currentVoiceId = extractVoiceId(voiceStylePath);
+  }
 
   return 'wasm';
 }
@@ -562,7 +808,8 @@ self.onmessage = async (event: MessageEvent<WorkerInMessage>) => {
   switch (message.type) {
     case 'init': {
       try {
-        const backend = await initialize(message.baseUrl, message.onnxDir, message.voiceStylePath);
+        const useLazyLoading = message.enableLazyVoiceLoading ?? false;
+        const backend = await initialize(message.baseUrl, message.onnxDir, message.voiceStylePath, useLazyLoading);
         self.postMessage({ type: 'ready', backend } as WorkerReadyResponse);
       } catch (error) {
         self.postMessage({
@@ -627,6 +874,48 @@ self.onmessage = async (event: MessageEvent<WorkerInMessage>) => {
       break;
     }
 
+    case 'synthesizeStreaming': {
+      // If already processing, queue will be handled by manager
+      if (isProcessing) {
+        self.postMessage({
+          type: 'error',
+          id: message.id,
+          message: 'Worker is busy'
+        } as WorkerErrorResponse);
+        return;
+      }
+
+      isProcessing = true;
+      currentRequestId = message.id;
+
+      try {
+        await synthesizeStreaming(
+          message.text,
+          message.speed,
+          message.totalSteps,
+          message.chunkDurationMs,
+          message.id,
+          message.preprocessedText
+        );
+
+        // Check if cancelled
+        if (cancelledRequests.has(message.id)) {
+          self.postMessage({ type: 'cancelled', id: message.id } as WorkerCancelledResponse);
+        }
+      } catch (error) {
+        self.postMessage({
+          type: 'error',
+          id: message.id,
+          message: error instanceof Error ? error.message : 'Streaming synthesis failed'
+        } as WorkerErrorResponse);
+      } finally {
+        isProcessing = false;
+        currentRequestId = null;
+        cancelledRequests.delete(message.id);
+      }
+      break;
+    }
+
     case 'cancel': {
       cancelledRequests.add(message.id);
       break;
@@ -641,7 +930,22 @@ self.onmessage = async (event: MessageEvent<WorkerInMessage>) => {
 
     case 'setVoice': {
       try {
-        voiceStyle = await loadVoiceStyle(message.baseUrl, message.voiceStylePath);
+        const newVoiceId = extractVoiceId(message.voiceStylePath);
+
+        // Use VoiceStyleManager if lazy loading is enabled
+        if (enableLazyVoiceLoading && voiceStyleManager) {
+          const isCached = voiceStyleManager.isCached(newVoiceId);
+          if (isCached) {
+            console.log(`[Worker] Voice ${newVoiceId} already cached, instant switch`);
+          }
+
+          voiceStyle = await voiceStyleManager.loadStyle(newVoiceId);
+          currentVoiceId = newVoiceId;
+        } else {
+          // Legacy mode: load voice style directly
+          voiceStyle = await loadVoiceStyle(message.baseUrl, message.voiceStylePath);
+          currentVoiceId = newVoiceId;
+        }
       } catch (error) {
         self.postMessage({
           type: 'error',

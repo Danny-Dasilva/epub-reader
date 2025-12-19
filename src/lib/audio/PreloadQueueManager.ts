@@ -17,6 +17,7 @@ import { ParakeetASR, getSharedParakeetASR } from '../asr/parakeet';
 import { SentenceAudioState } from '@/store/sentenceStateStore';
 import { float32ToWav, createAudioBlobUrl, resampleAudio } from '../tts/audioUtils';
 import { MinHeap } from '../utils/MinHeap';
+import { getAudioCacheService, AudioCacheParams } from './AudioCacheService';
 
 export interface PreloadConfig {
   preloadCount: number;      // Max number of sentences to preload ahead (default: 4)
@@ -78,6 +79,13 @@ export class PreloadQueueManager {
   private parakeetInitPromise: Promise<ParakeetASR> | null = null;  // Track initialization
   private asrCompleteCallback: ((sentenceId: string, timestamps: WordTimestamp[]) => void) | null = null;
 
+  // Audio caching with Service Worker
+  private audioCache = getAudioCacheService();
+  private audioCacheEnabled: boolean = true;
+  private currentBookId: string = '';
+  private currentVoice: string = '';
+  private currentSpeechRate: number = 1.0;
+
   constructor(ttsManager: TTSWorkerManager, config: Partial<PreloadConfig> = {}) {
     this.ttsManager = ttsManager;
 
@@ -127,6 +135,23 @@ export class PreloadQueueManager {
    */
   setPlaybackRate(rate: number): void {
     this.playbackRate = rate;
+  }
+
+  /**
+   * Set audio cache context for cache key generation
+   * Call this when voice or speech rate changes, or when switching books
+   */
+  setAudioCacheContext(bookId: string, voice: string, speechRate: number): void {
+    this.currentBookId = bookId;
+    this.currentVoice = voice;
+    this.currentSpeechRate = speechRate;
+  }
+
+  /**
+   * Enable or disable audio caching
+   */
+  setAudioCacheEnabled(enabled: boolean): void {
+    this.audioCacheEnabled = enabled;
   }
 
   /**
@@ -326,6 +351,34 @@ export class PreloadQueueManager {
         return;
       }
 
+      // Check cache first
+      if (this.audioCacheEnabled && this.currentBookId) {
+        const cacheParams: AudioCacheParams = {
+          bookId: this.currentBookId,
+          chapterId: parseInt(sentence.chapterId) || 0,
+          sentenceId: sentence.id,
+          text: sentence.text,
+          voice: this.currentVoice,
+          speechRate: this.currentSpeechRate,
+        };
+
+        const cachedBlob = await this.audioCache.getCachedAudio(cacheParams);
+        if (cachedBlob) {
+          // Use cached audio
+          const audio = await this.createSentenceAudioFromBlob(sentence, cachedBlob);
+
+          // Evict old entries if cache is full
+          this.evictIfNeeded();
+
+          this.cache.set(sentence.id, audio);
+          this.touchAccess(sentence.id);
+          this.stateCallback?.(sentence.id, 'ready');
+          this.config.onItemComplete?.(sentence.id, this.cache.size);
+          console.log(`[Preload] Cache HIT for sentence: ${sentence.id}`);
+          return;
+        }
+      }
+
       // Use fewer steps for urgent requests (priority 0 = current sentence)
       const totalSteps = priority === 0 ? this.config.urgentSteps : this.config.totalSteps;
 
@@ -363,6 +416,21 @@ export class PreloadQueueManager {
 
       // Notify that an item completed (for continuous queue extension)
       this.config.onItemComplete?.(sentence.id, this.cache.size);
+
+      // Cache the result in service worker (async, non-blocking)
+      if (this.audioCacheEnabled && this.currentBookId && audio.wavBuffer) {
+        const cacheParams: AudioCacheParams = {
+          bookId: this.currentBookId,
+          chapterId: parseInt(sentence.chapterId) || 0,
+          sentenceId: sentence.id,
+          text: sentence.text,
+          voice: this.currentVoice,
+          speechRate: this.currentSpeechRate,
+        };
+
+        this.audioCache.cacheAudio(cacheParams, new Blob([audio.wavBuffer], { type: 'audio/wav' }))
+          .catch(err => console.warn('[Preload] Failed to cache audio:', err));
+      }
 
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
@@ -586,6 +654,35 @@ export class PreloadQueueManager {
   }
 
   /**
+   * Create a SentenceAudio object from cached blob
+   * Used when retrieving audio from service worker cache
+   */
+  private async createSentenceAudioFromBlob(sentence: Sentence, blob: Blob): Promise<SentenceAudio> {
+    const wavBuffer = await blob.arrayBuffer();
+    const blobUrl = this.createAndTrackBlobUrl(sentence.id, wavBuffer);
+
+    // Estimate duration from WAV header (44 bytes header, 44100 Hz, 16-bit mono)
+    const dataSize = wavBuffer.byteLength - 44;
+    const duration = dataSize / (44100 * 2);
+
+    // We don't have raw PCM from cached blob, so create an empty Float32Array
+    // This is okay because cached audio already has blobUrl and wavBuffer
+    const rawPcm = new Float32Array(0);
+
+    return {
+      sentenceId: sentence.id,
+      text: sentence.text,
+      blobUrl,
+      wavBuffer,
+      rawPcm,
+      duration,
+      sampleRate: 44100,
+      wordTimestamps: this.estimateWordTimings(sentence.text, duration),
+      timestampSource: 'estimated',
+    };
+  }
+
+  /**
    * Create an AudioBuffer from Float32Array
    */
   private async createAudioBuffer(
@@ -693,6 +790,30 @@ export class PreloadQueueManager {
     const cached = this.getAudio(sentence.id);
     if (cached) return cached;
 
+    // Check service worker cache before synthesizing
+    if (this.audioCacheEnabled && this.currentBookId) {
+      const cacheParams: AudioCacheParams = {
+        bookId: this.currentBookId,
+        chapterId: parseInt(sentence.chapterId) || 0,
+        sentenceId: sentence.id,
+        text: sentence.text,
+        voice: this.currentVoice,
+        speechRate: this.currentSpeechRate,
+      };
+
+      const cachedBlob = await this.audioCache.getCachedAudio(cacheParams);
+      if (cachedBlob) {
+        // Use cached audio
+        const audio = await this.createSentenceAudioFromBlob(sentence, cachedBlob);
+        this.evictIfNeeded();
+        this.cache.set(sentence.id, audio);
+        this.touchAccess(sentence.id);
+        this.stateCallback?.(sentence.id, 'ready');
+        console.log(`[Preload] Cache HIT for urgent sentence: ${sentence.id}`);
+        return audio;
+      }
+    }
+
     // If worker is busy with preload, cancel it to prioritize this sentence
     // This ensures the user doesn't wait for background preload to complete
     if (this.ttsManager.isBusy() || this.ttsManager.queueLength() > 0) {
@@ -737,6 +858,21 @@ export class PreloadQueueManager {
       this.cache.set(sentence.id, audio);
       this.touchAccess(sentence.id);
       this.stateCallback?.(sentence.id, 'ready');
+
+      // Cache the result in service worker (async, non-blocking)
+      if (this.audioCacheEnabled && this.currentBookId && audio.wavBuffer) {
+        const cacheParams: AudioCacheParams = {
+          bookId: this.currentBookId,
+          chapterId: parseInt(sentence.chapterId) || 0,
+          sentenceId: sentence.id,
+          text: sentence.text,
+          voice: this.currentVoice,
+          speechRate: this.currentSpeechRate,
+        };
+
+        this.audioCache.cacheAudio(cacheParams, new Blob([audio.wavBuffer], { type: 'audio/wav' }))
+          .catch(err => console.warn('[Preload] Failed to cache audio:', err));
+      }
 
       return audio;
     } catch (error) {

@@ -54,6 +54,8 @@ export function useAudioPlayback() {
   const speechRate = usePlaybackStore(state => state.speechRate);
   const audioPlaybackRate = usePlaybackStore(state => state.audioPlaybackRate);
   const enableASR = usePlaybackStore(state => state.enableASR);
+  const enableLazyVoiceLoading = usePlaybackStore(state => state.enableLazyVoiceLoading);
+  const enableStreamingTTS = usePlaybackStore(state => state.enableStreamingTTS);
   const session = usePlaybackStore(state => state.session);
   const setIsPlaying = usePlaybackStore(state => state.setIsPlaying);
   const startSession = usePlaybackStore(state => state.startSession);
@@ -94,13 +96,16 @@ export function useAudioPlayback() {
 
       try {
         const voicePath = VOICE_PATHS[currentVoice] || VOICE_PATHS['M1'];
+        // Capture the flag value on mount (won't change during initialization)
+        const useLazyLoading = usePlaybackStore.getState().enableLazyVoiceLoading;
 
         const service = initializeAudioSyncService({
           ttsModelPath: TTS_MODEL_PATH,
           voiceStylePath: voicePath,
           preloadCount: 4,
           speed: speechRate,
-          totalSteps: 5
+          totalSteps: 5,
+          enableLazyVoiceLoading: useLazyLoading
         });
 
         // Connect sentence state changes to the store
@@ -321,13 +326,26 @@ export function useAudioPlayback() {
           // Update playback position for cache eviction protection and ASR
           service.setCurrentPlayingIndex(currentSentenceIndex, chapter.sentences);
 
-          // Use gapless playback for sample-accurate transitions
-          service.playSentenceGapless(sentence, chapter.sentences, currentSentenceIndex, abortController.signal).catch(error => {
-            if (error.name !== 'AbortError') {
-              console.error('Failed to play sentence:', error);
-              setIsPlaying(false);
-            }
-          });
+          // Check if we should use streaming (only for uncached sentences)
+          const useStreaming = enableStreamingTTS && !service.isAudioReady(sentence.id);
+
+          if (useStreaming) {
+            // Use streaming TTS for faster time-to-first-audio
+            service.playSentenceStreaming(sentence, true, abortController.signal).catch(error => {
+              if (error.name !== 'AbortError') {
+                console.error('Failed to play sentence (streaming):', error);
+                setIsPlaying(false);
+              }
+            });
+          } else {
+            // Use gapless playback for sample-accurate transitions
+            service.playSentenceGapless(sentence, chapter.sentences, currentSentenceIndex, abortController.signal).catch(error => {
+              if (error.name !== 'AbortError') {
+                console.error('Failed to play sentence:', error);
+                setIsPlaying(false);
+              }
+            });
+          }
         }
       }
 
@@ -504,13 +522,26 @@ export function useAudioPlayback() {
       // Update playback position for cache eviction protection and ASR
       service.setCurrentPlayingIndex(index, chapter.sentences);
 
-      // Use gapless playback for sample-accurate transitions
-      service.playSentenceGapless(sentence, chapter.sentences, index, abortController.signal).catch(error => {
-        if (error.name !== 'AbortError') {
-          console.error('Failed to play sentence:', error);
-          setIsPlaying(false);
-        }
-      });
+      // Check if we should use streaming (only for uncached sentences)
+      const useStreaming = usePlaybackStore.getState().enableStreamingTTS && !service.isAudioReady(sentence.id);
+
+      if (useStreaming) {
+        // Use streaming TTS for faster time-to-first-audio
+        service.playSentenceStreaming(sentence, true, abortController.signal).catch(error => {
+          if (error.name !== 'AbortError') {
+            console.error('Failed to play sentence (streaming):', error);
+            setIsPlaying(false);
+          }
+        });
+      } else {
+        // Use gapless playback for sample-accurate transitions
+        service.playSentenceGapless(sentence, chapter.sentences, index, abortController.signal).catch(error => {
+          if (error.name !== 'AbortError') {
+            console.error('Failed to play sentence:', error);
+            setIsPlaying(false);
+          }
+        });
+      }
 
       // Ensure playing state
       if (!usePlaybackStore.getState().isPlaying) {

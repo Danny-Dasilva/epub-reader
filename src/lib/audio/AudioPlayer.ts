@@ -6,6 +6,7 @@
 
 import { PlaybackEvent, PlaybackEventHandler, SentenceAudio } from './types';
 import { WordTimestamp } from '../asr/types';
+import { StreamingAudioWorklet, isAudioWorkletSupported } from './StreamingAudioWorklet';
 
 /** Callback to get audio for a sentence offset ahead of current */
 type GetSentenceAheadFn = (offset: number) => SentenceAudio | undefined;
@@ -35,8 +36,19 @@ export class AudioPlayer {
   private gaplessMode: boolean = false;
   private getSentenceAhead: GetSentenceAheadFn | null = null;
 
+  // Streaming mode state
+  private streamingWorklet: StreamingAudioWorklet | null = null;
+  private isStreamingMode: boolean = false;
+
   constructor() {
     // AudioContext will be created on first user interaction
+  }
+
+  /**
+   * Check if AudioWorklet is supported (required for streaming TTS)
+   */
+  isAudioWorkletSupported(): boolean {
+    return isAudioWorkletSupported();
   }
 
   private async ensureAudioContext(): Promise<AudioContext> {
@@ -581,6 +593,106 @@ export class AudioPlayer {
     return this.currentSentence?.sentenceId ?? null;
   }
 
+  // ============================================
+  // STREAMING TTS PLAYBACK (AUDIOWORKLET)
+  // ============================================
+
+  /**
+   * Start streaming playback mode
+   * Returns a worklet instance that can receive audio chunks
+   */
+  async startStreamingPlayback(sentenceId: string): Promise<StreamingAudioWorklet> {
+    await this.ensureAudioContext();
+
+    // Stop any existing playback
+    this.stopInternal();
+
+    // Create or reuse streaming worklet
+    if (!this.streamingWorklet) {
+      this.streamingWorklet = new StreamingAudioWorklet();
+      await this.streamingWorklet.initialize(this.audioContext!);
+    } else {
+      // Reset existing worklet
+      this.streamingWorklet.reset();
+    }
+
+    // Set up callbacks
+    this.streamingWorklet.setCallbacks({
+      onStarted: () => {
+        this.isPlaying = true;
+        this.isStreamingMode = true;
+        this.emit({
+          type: 'sentenceStart',
+          sentenceId
+        });
+        this.emit({ type: 'play' });
+      },
+      onEnded: () => {
+        this.isPlaying = false;
+        this.isStreamingMode = false;
+        this.emit({
+          type: 'sentenceEnd',
+          sentenceId,
+          duration: 0  // Duration not tracked in streaming mode
+        });
+        this.emit({ type: 'stop' });
+      },
+      onProgress: (progress) => {
+        // Could emit progress events here if needed
+      }
+    });
+
+    // Connect to output
+    if (this.audioContext) {
+      this.streamingWorklet.connect(this.audioContext.destination);
+      this.streamingWorklet.setVolume(this.volume);
+    }
+
+    return this.streamingWorklet;
+  }
+
+  /**
+   * Append an audio chunk to the streaming worklet
+   */
+  appendStreamingChunk(audio: Float32Array): void {
+    if (!this.streamingWorklet) {
+      console.warn('[AudioPlayer] No streaming worklet active');
+      return;
+    }
+    this.streamingWorklet.appendChunk(audio);
+  }
+
+  /**
+   * Mark streaming as complete (no more chunks coming)
+   */
+  finishStreaming(): void {
+    if (!this.streamingWorklet) {
+      console.warn('[AudioPlayer] No streaming worklet active');
+      return;
+    }
+    this.streamingWorklet.markComplete();
+  }
+
+  /**
+   * Stop streaming playback
+   */
+  stopStreaming(): void {
+    if (this.streamingWorklet) {
+      this.streamingWorklet.disconnect();
+      this.streamingWorklet.reset();
+    }
+    this.isStreamingMode = false;
+    this.isPlaying = false;
+    this.emit({ type: 'stop' });
+  }
+
+  /**
+   * Check if currently in streaming mode
+   */
+  isStreaming(): boolean {
+    return this.isStreamingMode;
+  }
+
   // Legacy compatibility methods
   async prepareNextAudio(nextSentence: SentenceAudio): Promise<void> {
     this.prepareNextSentence(nextSentence);
@@ -604,6 +716,10 @@ export class AudioPlayer {
     if (this.mediaSourceB) {
       try { this.mediaSourceB.disconnect(); } catch {}
       this.mediaSourceB = null;
+    }
+    if (this.streamingWorklet) {
+      this.streamingWorklet.dispose();
+      this.streamingWorklet = null;
     }
     if (this.audioContext) {
       this.audioContext.close();

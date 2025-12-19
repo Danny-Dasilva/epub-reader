@@ -24,6 +24,7 @@ export interface AudioSyncConfig {
   preloadCharLimit?: number;
   speed?: number;
   totalSteps?: number;
+  enableLazyVoiceLoading?: boolean;
 }
 
 export type SyncProgressCallback = (
@@ -95,7 +96,8 @@ export class AudioSyncService {
         (modelName, current, total) => {
           const progress = (current / total) * 90;
           progressCallback?.('loading', progress, `Loading ${modelName}...`);
-        }
+        },
+        this.config.enableLazyVoiceLoading
       );
 
       // NOTE: AudioContext is NOT created here to avoid browser autoplay policy errors.
@@ -156,6 +158,84 @@ export class AudioSyncService {
    */
   setOnPreloadComplete(callback: (sentenceId: string, cacheSize: number) => void): void {
     this.preloadManager.setConfig({ onItemComplete: callback });
+  }
+
+  /**
+   * Play a sentence using streaming TTS (if enabled and not cached)
+   * Falls back to regular playback if streaming is disabled or audio is cached
+   */
+  async playSentenceStreaming(sentence: Sentence, enableStreaming: boolean, signal?: AbortSignal): Promise<void> {
+    // Ensure AudioContext is set on first play
+    if (!this.preloadManager.hasAudioContext()) {
+      this.preloadManager.setAudioContext(await this.player.getAudioContext());
+    }
+
+    // Check if audio is already cached - use non-streaming path for instant playback
+    const cachedAudio = this.preloadManager.getAudio(sentence.id);
+    if (cachedAudio) {
+      // Audio is cached, use regular (non-streaming) playback for instant start
+      this.stateCallback?.(sentence.id, 'playing');
+      await this.player.playSentence(cachedAudio);
+      this.prepareNextSentenceAudio();
+      return;
+    }
+
+    // Audio not cached - use streaming if enabled and supported
+    if (!enableStreaming) {
+      // Streaming disabled, fall back to regular synthesis + playback
+      await this.playSentence(sentence, signal);
+      return;
+    }
+
+    // Check if AudioWorklet is supported (required for streaming)
+    const audioWorkletSupported = this.player.isAudioWorkletSupported();
+    if (!audioWorkletSupported) {
+      console.warn('[AudioSyncService] AudioWorklet not supported, falling back to regular playback');
+      await this.playSentence(sentence, signal);
+      return;
+    }
+
+    // Start streaming playback
+    this.stateCallback?.(sentence.id, 'playing');
+
+    try {
+      // Initialize streaming worklet
+      const worklet = await this.player.startStreamingPlayback(sentence.id);
+
+      // Start streaming synthesis
+      await this.ttsManager.synthesizeStreaming(
+        sentence.text,
+        {
+          speed: this.config.speed || 1.0,
+          totalSteps: this.config.totalSteps || 5,
+          chunkDurationMs: 500,  // 500ms chunks for ~500ms time-to-first-audio
+          preprocessedText: sentence.preprocessedText,
+          onChunk: (audio: Float32Array, chunkIndex: number, isLast: boolean) => {
+            // Append chunk to worklet for immediate playback
+            this.player.appendStreamingChunk(audio);
+
+            // Mark complete when last chunk received
+            if (isLast) {
+              this.player.finishStreaming();
+            }
+          }
+        },
+        signal
+      );
+
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        // Cancelled - restore to ready if cached
+        if (this.preloadManager.isReady(sentence.id)) {
+          this.stateCallback?.(sentence.id, 'ready');
+        }
+      } else {
+        // Streaming failed, try falling back to regular synthesis
+        console.warn('[AudioSyncService] Streaming failed, falling back to regular synthesis:', error);
+        await this.playSentence(sentence, signal);
+      }
+      throw error;
+    }
   }
 
   /**
