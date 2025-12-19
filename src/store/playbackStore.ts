@@ -59,7 +59,7 @@ export const usePlaybackStore = create<PlaybackState & PlaybackActions>()(
       enableIndexedDBStorage: true,  // Enable IndexedDB by default
       enableLazyVoiceLoading: true,  // Enable lazy voice loading by default
       enableAudioCaching: true,  // Enable audio caching by default for instant replay
-      enableStreamingTTS: true,  // Enable streaming TTS by default
+      enableStreamingTTS: false,  // Disable streaming TTS by default
       session: initialSession,
 
       // Actions
