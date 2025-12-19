@@ -1,9 +1,11 @@
 'use client';
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { parseEpub } from '@/lib/epub';
 import { useLibraryStore, StoredBook } from '@/store/libraryStore';
+import { usePlaybackStore } from '@/store/playbackStore';
+import { migrateFromSessionStorage } from '@/lib/storage';
 
 // Icons as inline SVGs
 const BookIcon = () => (
@@ -35,7 +37,23 @@ export default function LibraryPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { books, addBook, removeBook } = useLibraryStore();
+  const { books, addBook, removeBook, loadBooksFromDB, addBookToDB } = useLibraryStore();
+  const enableIndexedDBStorage = usePlaybackStore(state => state.enableIndexedDBStorage);
+
+  // Load books from IndexedDB on mount
+  useEffect(() => {
+    const initStorage = async () => {
+      if (enableIndexedDBStorage) {
+        // Run migration from sessionStorage
+        await migrateFromSessionStorage();
+
+        // Load books from IndexedDB
+        await loadBooksFromDB();
+      }
+    };
+
+    initStorage();
+  }, [enableIndexedDBStorage, loadBooksFromDB]);
 
   const handleFileSelect = useCallback(async (file: File) => {
     if (!file.name.endsWith('.epub')) {
@@ -51,8 +69,13 @@ export default function LibraryPage() {
       const parsedBook = await parseEpub(arrayBuffer);
       addBook(parsedBook);
 
-      // Store the full book data in sessionStorage for the reader
-      sessionStorage.setItem(`book-${parsedBook.id}`, JSON.stringify(parsedBook));
+      // Save to IndexedDB if enabled, otherwise use sessionStorage
+      if (enableIndexedDBStorage) {
+        await addBookToDB(parsedBook);
+      } else {
+        // Fallback to sessionStorage
+        sessionStorage.setItem(`book-${parsedBook.id}`, JSON.stringify(parsedBook));
+      }
 
       // Navigate to reader
       router.push(`/reader/${parsedBook.id}`);
@@ -62,7 +85,7 @@ export default function LibraryPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [addBook, router]);
+  }, [addBook, addBookToDB, enableIndexedDBStorage, router]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -91,11 +114,20 @@ export default function LibraryPage() {
     router.push(`/reader/${book.id}`);
   };
 
-  const handleDeleteBook = (e: React.MouseEvent, bookId: string) => {
+  const handleDeleteBook = async (e: React.MouseEvent, bookId: string) => {
     e.stopPropagation();
     if (confirm('Remove this book from your library?')) {
       removeBook(bookId);
-      sessionStorage.removeItem(`book-${bookId}`);
+
+      // Delete from IndexedDB if enabled
+      if (enableIndexedDBStorage) {
+        const { getBookStorage } = await import('@/lib/storage');
+        const storage = getBookStorage();
+        await storage.deleteBook(bookId);
+      } else {
+        // Fallback to sessionStorage
+        sessionStorage.removeItem(`book-${bookId}`);
+      }
     }
   };
 

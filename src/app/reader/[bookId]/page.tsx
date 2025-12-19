@@ -8,6 +8,7 @@ import { useNavigationStore } from '@/store/navigationStore';
 import { usePlaybackStore } from '@/store/playbackStore';
 import { useUIStore } from '@/store/uiStore';
 import { useTTSStore } from '@/store/ttsStore';
+import { getBookStorage } from '@/lib/storage';
 import { useSentenceStateStore, subscribeToHighlight, setHighlight, Highlight, getAudioPosition, setCumulativeTime } from '@/store/sentenceStateStore';
 import { useLibraryStore } from '@/store/libraryStore';
 import { useReadingProgressStore } from '@/store/readingProgressStore';
@@ -86,6 +87,7 @@ export default function ReaderPage() {
   const audioPlaybackRate = usePlaybackStore(state => state.audioPlaybackRate);
   const setAudioPlaybackRate = usePlaybackStore(state => state.setAudioPlaybackRate);
   const enableASR = usePlaybackStore(state => state.enableASR);
+  const enableIndexedDBStorage = usePlaybackStore(state => state.enableIndexedDBStorage);
 
   // UI store
   const theme = useUIStore(state => state.theme);
@@ -168,27 +170,52 @@ export default function ReaderPage() {
     containerRef: mainRef
   });
 
-  // Load book from sessionStorage or library
+  // Load book from IndexedDB or sessionStorage
   useEffect(() => {
     const loadBook = async () => {
       setLoading(true);
 
-      // Try sessionStorage first
-      const storedBook = sessionStorage.getItem(`book-${bookId}`);
-      if (storedBook) {
-        const parsed = JSON.parse(storedBook) as ParsedBook;
-        setBook(parsed);
-        setCurrentBook(parsed);
+      let parsedBook: ParsedBook | null = null;
+
+      // Try IndexedDB first if enabled
+      if (enableIndexedDBStorage) {
+        const storage = getBookStorage();
+        parsedBook = await storage.loadBook(bookId);
+
+        if (parsedBook) {
+          console.log('Loaded book from IndexedDB:', parsedBook.title);
+        } else {
+          // Fallback to sessionStorage for migration
+          const storedBook = sessionStorage.getItem(`book-${bookId}`);
+          if (storedBook) {
+            parsedBook = JSON.parse(storedBook) as ParsedBook;
+            console.log('Loaded book from sessionStorage, migrating to IndexedDB');
+            // Migrate to IndexedDB
+            await storage.saveBook(parsedBook);
+            // Keep in sessionStorage as backup for now
+          }
+        }
+      } else {
+        // Use sessionStorage if IndexedDB disabled
+        const storedBook = sessionStorage.getItem(`book-${bookId}`);
+        if (storedBook) {
+          parsedBook = JSON.parse(storedBook) as ParsedBook;
+        }
+      }
+
+      if (parsedBook) {
+        setBook(parsedBook);
+        setCurrentBook(parsedBook);
         // Calculate pagination for page numbers
-        setPagination(calculatePagination(parsed));
+        setPagination(calculatePagination(parsedBook));
 
         // Restore saved reading position
         const savedProgress = getProgress(bookId);
         if (savedProgress) {
           // Validate saved position is within bounds
-          if (savedProgress.chapterIndex < parsed.chapters.length) {
+          if (savedProgress.chapterIndex < parsedBook.chapters.length) {
             setChapter(savedProgress.chapterIndex);
-            const chapter = parsed.chapters[savedProgress.chapterIndex];
+            const chapter = parsedBook.chapters[savedProgress.chapterIndex];
             if (savedProgress.sentenceIndex < chapter.sentences.length) {
               setSentenceIndex(savedProgress.sentenceIndex);
             }
@@ -197,15 +224,14 @@ export default function ReaderPage() {
 
         updateLastRead(bookId);
         setLoading(false);
-        return;
+      } else {
+        // If not found anywhere, redirect to library
+        router.push('/');
       }
-
-      // If not in sessionStorage, redirect to library
-      router.push('/');
     };
 
     loadBook();
-  }, [bookId, router, setCurrentBook, setChapter, setSentenceIndex, getProgress, updateLastRead]);
+  }, [bookId, router, enableIndexedDBStorage, setCurrentBook, setChapter, setSentenceIndex, getProgress, updateLastRead]);
 
   // Save reading progress when position changes
   useEffect(() => {

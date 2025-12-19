@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { ParsedBook } from '@/lib/epub';
+import { getBookStorage } from '@/lib/storage';
 
 export interface StoredBook {
   id: string;
@@ -23,6 +24,8 @@ interface LibraryState {
   updateProgress: (bookId: string, progress: number) => void;
   updateLastRead: (bookId: string) => void;
   getBook: (bookId: string) => StoredBook | undefined;
+  loadBooksFromDB: () => Promise<void>;
+  addBookToDB: (book: ParsedBook) => Promise<void>;
 }
 
 export const useLibraryStore = create<LibraryState>()(
@@ -76,6 +79,54 @@ export const useLibraryStore = create<LibraryState>()(
 
       getBook: (bookId: string) => {
         return get().books.find(b => b.id === bookId);
+      },
+
+      loadBooksFromDB: async () => {
+        try {
+          const storage = getBookStorage();
+          const dbBooks = await storage.listBooks();
+
+          if (dbBooks.length > 0) {
+            // Merge with existing books (IndexedDB takes precedence)
+            const existingBooks = get().books;
+            const mergedBooks = [...dbBooks];
+
+            // Add any books from localStorage that aren't in IndexedDB
+            for (const book of existingBooks) {
+              if (!dbBooks.find(b => b.id === book.id)) {
+                mergedBooks.push(book);
+              }
+            }
+
+            set({ books: mergedBooks });
+          }
+        } catch (err) {
+          console.error('Failed to load books from IndexedDB:', err);
+        }
+      },
+
+      addBookToDB: async (book: ParsedBook) => {
+        try {
+          const storage = getBookStorage();
+          await storage.saveBook(book);
+
+          // Update the book in the store if it exists
+          const storedBook: StoredBook = {
+            id: book.id,
+            title: book.title,
+            author: book.author,
+            cover: book.cover,
+            addedAt: Date.now(),
+            lastReadAt: Date.now(),
+            progress: 0
+          };
+
+          set((state) => ({
+            books: [...state.books.filter(b => b.id !== book.id), storedBook]
+          }));
+        } catch (err) {
+          console.error('Failed to save book to IndexedDB:', err);
+        }
       }
     }),
     {

@@ -9,7 +9,8 @@ import type {
   WorkerOutMessage,
   WorkerCompleteResponse,
   WorkerProgressResponse,
-  WorkerLoadingResponse
+  WorkerLoadingResponse,
+  WorkerChunkResponse
 } from './tts.worker';
 
 export interface TTSSynthesisResult {
@@ -26,13 +27,20 @@ export interface TTSSynthesisOptions {
   preprocessedText?: string;  // Optional: precomputed preprocessed text to skip preprocessing
 }
 
+export interface TTSStreamingOptions extends TTSSynthesisOptions {
+  chunkDurationMs?: number;  // Target chunk duration in milliseconds (default: 500ms)
+  onChunk?: (audio: Float32Array, chunkIndex: number, isLast: boolean) => void;
+}
+
 export type TTSLoadProgressCallback = (modelName: string, current: number, total: number) => void;
 
 interface PendingRequest {
   resolve: (result: TTSSynthesisResult) => void;
   reject: (error: Error) => void;
   onProgress?: (step: number, totalSteps: number) => void;
+  onChunk?: (audio: Float32Array, chunkIndex: number, isLast: boolean) => void;
   workerIndex: number; // Track which worker is handling this request
+  isStreaming?: boolean;  // Track if this is a streaming request
 }
 
 export class TTSWorkerManager {
@@ -57,7 +65,8 @@ export class TTSWorkerManager {
   async initialize(
     onnxDir: string,
     voiceStylePath: string,
-    onProgress?: TTSLoadProgressCallback
+    onProgress?: TTSLoadProgressCallback,
+    enableLazyVoiceLoading?: boolean
   ): Promise<'webgpu' | 'wasm'> {
     if (this.isReady && this.backend) {
       return this.backend;
@@ -104,7 +113,8 @@ export class TTSWorkerManager {
         type: 'init',
         baseUrl: typeof window !== 'undefined' ? window.location.origin : '',
         onnxDir,
-        voiceStylePath
+        voiceStylePath,
+        enableLazyVoiceLoading
       } as WorkerInMessage);
     }
 
@@ -145,6 +155,31 @@ export class TTSWorkerManager {
         const progressMsg = message as WorkerProgressResponse;
         const pending = this.pendingRequests.get(progressMsg.id);
         pending?.onProgress?.(progressMsg.step, progressMsg.totalSteps);
+        break;
+      }
+
+      case 'chunk': {
+        const chunkMsg = message as WorkerChunkResponse;
+        const pending = this.pendingRequests.get(chunkMsg.id);
+        if (pending) {
+          // Call chunk callback
+          pending.onChunk?.(chunkMsg.audio, chunkMsg.chunkIndex, chunkMsg.isLast);
+
+          // If this is the last chunk, resolve the promise and clean up
+          if (chunkMsg.isLast) {
+            // For streaming, we resolve with an empty result since audio was already streamed
+            pending.resolve({
+              wav: new Float32Array(0),
+              wavBuffer: new ArrayBuffer(0),
+              duration: 0,
+              sampleRate: 44100
+            });
+            this.pendingRequests.delete(chunkMsg.id);
+            // Mark this worker as not busy
+            this.workerBusy[workerIndex] = false;
+            this.processNextInQueue();
+          }
+        }
         break;
       }
 
@@ -238,6 +273,79 @@ export class TTSWorkerManager {
         this.processNextInQueue();
       }
     }
+  }
+
+  /**
+   * Synthesize text to speech with streaming output
+   * Emits audio chunks as they're generated for faster time-to-first-audio
+   */
+  async synthesizeStreaming(
+    text: string,
+    options: TTSStreamingOptions = {},
+    signal?: AbortSignal
+  ): Promise<void> {
+    if (!this.isReady || this.workers.length === 0) {
+      throw new Error('Worker not initialized');
+    }
+
+    // Check if already aborted
+    if (signal?.aborted) {
+      throw new DOMException('Synthesis cancelled', 'AbortError');
+    }
+
+    const requestId = `req_${++this.requestIdCounter}_${Date.now()}`;
+
+    const promise = new Promise<TTSSynthesisResult>((resolve, reject) => {
+      // Set up abort handler
+      if (signal) {
+        const abortHandler = () => {
+          this.cancel(requestId);
+          // Remove from queue if not yet processing
+          this.requestQueue = this.requestQueue.filter(r => r.id !== requestId);
+        };
+        signal.addEventListener('abort', abortHandler, { once: true });
+      }
+
+      const message: WorkerInMessage = {
+        type: 'synthesizeStreaming',
+        id: requestId,
+        text,
+        speed: options.speed ?? 1.0,
+        totalSteps: options.totalSteps ?? 5,
+        chunkDurationMs: options.chunkDurationMs ?? 500,
+        preprocessedText: options.preprocessedText
+      };
+
+      // Find an available worker
+      const workerIndex = this.findAvailableWorker();
+
+      if (workerIndex === -1) {
+        // All workers busy, queue the request
+        this.pendingRequests.set(requestId, {
+          resolve,
+          reject,
+          onProgress: options.onProgress,
+          onChunk: options.onChunk,
+          workerIndex: -1,
+          isStreaming: true
+        });
+        this.requestQueue.push({ message, id: requestId });
+      } else {
+        // Worker available, send immediately
+        this.workerBusy[workerIndex] = true;
+        this.pendingRequests.set(requestId, {
+          resolve,
+          reject,
+          onProgress: options.onProgress,
+          onChunk: options.onChunk,
+          workerIndex,
+          isStreaming: true
+        });
+        this.workers[workerIndex].postMessage(message);
+      }
+    });
+
+    await promise;
   }
 
   /**
