@@ -2,6 +2,8 @@
 
 import { memo, useCallback, useMemo, useRef, useState } from 'react';
 import { SentenceAudioState, useDebouncedSentenceStates } from '@/store/sentenceStateStore';
+import { TimelineStats } from './TimelineStats';
+import { TimeEstimate } from '@/hooks/useTimeEstimation';
 
 interface TimelineProps {
   totalSentences: number;
@@ -13,6 +15,8 @@ interface TimelineProps {
   currentTime?: number; // in seconds
   enableASR?: boolean;  // Whether ASR is enabled (hides STT stat when false)
   bookProgress?: number; // 0-100 percentage of book completion
+  timeEstimate?: TimeEstimate; // Time estimation data
+  isPlaying?: boolean; // Whether playback is active
 }
 
 // Optimization #4: Segment colors with opacity baked in for CSS gradient
@@ -60,7 +64,9 @@ export const Timeline = memo(function Timeline({
   estimatedDuration = 0,
   currentTime = 0,
   enableASR = false,
-  bookProgress = 0
+  bookProgress = 0,
+  timeEstimate,
+  isPlaying = false
 }: TimelineProps) {
   // Optimization #5: Use debounced sentence states to reduce re-renders during rapid preloading
   // This reduces render frequency from ~20/sec to ~6/sec while still providing responsive feedback
@@ -235,39 +241,21 @@ export const Timeline = memo(function Timeline({
         );
       })()}
 
-      <div className="timeline-stats">
-        <div className="stat-item played">
-          <span className="stat-label">Played</span>
-          <span className="stat-value">
-            {playedCount}/{totalSentences} ({Math.round(playedPercentage)}%)
-          </span>
-        </div>
-        <div className="stat-item time">
-          <span className="stat-value">
-            {formatTime(currentTime)} / ~{formatTime(estimatedDuration)}
-          </span>
-        </div>
-        <div className="stat-item ready">
-          <span className="stat-label">TTS</span>
-          <span className="stat-value">
-            {preloadStats.preloadedCount}/{totalSentences} ({Math.round(preloadStats.preloadPercentage)}%)
-          </span>
-        </div>
-        {enableASR && (
-          <div className="stat-item asr">
-            <span className="stat-label">STT</span>
-            <span className="stat-value">
-              {asrStats.asrCount}/{totalSentences} ({Math.round(asrStats.asrPercentage)}%)
-            </span>
-          </div>
-        )}
-        <div className="stat-item book">
-          <span className="stat-label">Book</span>
-          <span className="stat-value">
-            {bookProgress.toFixed(1)}%
-          </span>
-        </div>
-      </div>
+      <TimelineStats
+        playedCount={playedCount}
+        totalSentences={totalSentences}
+        playedPercentage={playedPercentage}
+        preloadedCount={preloadStats.preloadedCount}
+        preloadPercentage={preloadStats.preloadPercentage}
+        asrCount={asrStats.asrCount}
+        asrPercentage={asrStats.asrPercentage}
+        enableASR={enableASR}
+        bookProgress={bookProgress}
+        currentTime={currentTime}
+        estimatedDuration={estimatedDuration}
+        timeEstimate={timeEstimate}
+        isPlaying={isPlaying}
+      />
     </div>
   );
 });

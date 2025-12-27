@@ -33,6 +33,7 @@ export class StreamingAudioWorklet {
   private workletNode: AudioWorkletNode | null = null;
   private gainNode: GainNode | null = null;
   private isInitialized = false;
+  private isPaused = false;
   private onStarted: (() => void) | null = null;
   private onEnded: (() => void) | null = null;
   private onProgress: ((progress: number) => void) | null = null;
@@ -138,6 +139,23 @@ export class StreamingAudioWorklet {
     }
 
     this.workletNode.port.postMessage({ type: 'reset' });
+    this.isPaused = false;
+  }
+
+  pause(): void {
+    if (!this.workletNode) return;
+    this.workletNode.port.postMessage({ type: 'pause' });
+    this.isPaused = true;
+  }
+
+  resume(): void {
+    if (!this.workletNode) return;
+    this.workletNode.port.postMessage({ type: 'resume' });
+    this.isPaused = false;
+  }
+
+  getIsPaused(): boolean {
+    return this.isPaused;
   }
 
   setVolume(volume: number): void {
@@ -157,6 +175,7 @@ export class StreamingAudioWorklet {
     this.gainNode = null;
     this.audioContext = null;
     this.isInitialized = false;
+    this.isPaused = false;
     this.onStarted = null;
     this.onEnded = null;
     this.onProgress = null;

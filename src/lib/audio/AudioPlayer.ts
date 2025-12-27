@@ -39,6 +39,8 @@ export class AudioPlayer {
   // Streaming mode state
   private streamingWorklet: StreamingAudioWorklet | null = null;
   private isStreamingMode: boolean = false;
+  private streamingStartTime: number = 0;
+  private streamingSessionId: number = 0;  // Guard against stale ended events
 
   constructor() {
     // AudioContext will be created on first user interaction
@@ -397,10 +399,22 @@ export class AudioPlayer {
     this.stopWordTracking();
 
     const track = () => {
-      const player = this.getActivePlayer();
-      if (!this.isPlaying || !player || !this.currentSentence) return;
+      if (!this.isPlaying || !this.currentSentence) return;
 
-      const currentTime = player.currentTime;
+      let currentTime: number;
+
+      if (this.isStreamingMode) {
+        // For streaming: compute elapsed time from AudioContext
+        const contextTime = this.audioContext?.currentTime ?? 0;
+        currentTime = contextTime - this.streamingStartTime;
+        // Note: playbackRate doesn't apply to streaming worklet yet
+      } else {
+        // For non-streaming: use HTMLAudioElement currentTime
+        const player = this.getActivePlayer();
+        if (!player) return;
+        currentTime = player.currentTime;
+      }
+
       const wordIndex = this.findCurrentWordIndex(currentTime);
 
       if (wordIndex !== this.lastWordIndex) {
@@ -601,11 +615,21 @@ export class AudioPlayer {
    * Start streaming playback mode
    * Returns a worklet instance that can receive audio chunks
    */
-  async startStreamingPlayback(sentenceId: string): Promise<StreamingAudioWorklet> {
+  async startStreamingPlayback(sentence: SentenceAudio): Promise<StreamingAudioWorklet> {
     await this.ensureAudioContext();
 
     // Stop any existing playback
     this.stopInternal();
+
+    // Increment session ID to invalidate any pending callbacks from previous session
+    // This guards against race conditions where stale 'ended' messages arrive after
+    // a new sentence has started
+    this.streamingSessionId++;
+    const currentSessionId = this.streamingSessionId;
+
+    // Store sentence for word tracking
+    this.currentSentence = sentence;
+    this.lastWordIndex = -1;
 
     // Create or reuse streaming worklet
     if (!this.streamingWorklet) {
@@ -616,26 +640,46 @@ export class AudioPlayer {
       this.streamingWorklet.reset();
     }
 
-    // Set up callbacks
+    // Set up callbacks with session guard to ignore stale events
     this.streamingWorklet.setCallbacks({
       onStarted: () => {
+        // Ignore if this callback is from a stale session
+        if (currentSessionId !== this.streamingSessionId) {
+          console.warn('[AudioPlayer] Ignoring stale onStarted callback');
+          return;
+        }
         this.isPlaying = true;
         this.isStreamingMode = true;
+        // Record start time for word tracking
+        this.streamingStartTime = this.audioContext?.currentTime ?? 0;
         this.emit({
           type: 'sentenceStart',
-          sentenceId
+          sentenceId: sentence.sentenceId
         });
         this.emit({ type: 'play' });
+        // Start word highlighting
+        this.startWordTracking();
       },
       onEnded: () => {
+        // CRITICAL: Ignore if this callback is from a stale session
+        // This prevents race conditions where old 'ended' messages trigger
+        // sentenceEnd for a newly started sentence
+        if (currentSessionId !== this.streamingSessionId) {
+          console.warn('[AudioPlayer] Ignoring stale onEnded callback');
+          return;
+        }
+        this.stopWordTracking();
         this.isPlaying = false;
         this.isStreamingMode = false;
+        // Calculate actual duration from elapsed time
+        const duration = (this.audioContext?.currentTime ?? 0) - this.streamingStartTime;
         this.emit({
           type: 'sentenceEnd',
-          sentenceId,
-          duration: 0  // Duration not tracked in streaming mode
+          sentenceId: sentence.sentenceId,
+          duration
         });
-        this.emit({ type: 'stop' });
+        // DON'T emit 'stop' - let sentenceEnd handler decide whether to advance
+        // This allows automatic sentence transitions like non-streaming modes
       },
       onProgress: (progress) => {
         // Could emit progress events here if needed
@@ -671,6 +715,28 @@ export class AudioPlayer {
       return;
     }
     this.streamingWorklet.markComplete();
+  }
+
+  /**
+   * Pause streaming playback
+   */
+  pauseStreaming(): void {
+    if (this.streamingWorklet) {
+      this.streamingWorklet.pause();
+    }
+    this.isPlaying = false;
+    this.emit({ type: 'pause' });
+  }
+
+  /**
+   * Resume streaming playback
+   */
+  resumeStreaming(): void {
+    if (this.streamingWorklet) {
+      this.streamingWorklet.resume();
+    }
+    this.isPlaying = true;
+    this.emit({ type: 'play' });
   }
 
   /**

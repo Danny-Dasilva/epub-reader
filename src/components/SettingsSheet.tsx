@@ -4,6 +4,8 @@ import { memo, useEffect, useCallback } from 'react';
 import { Chapter } from '@/lib/epub';
 import { useUIStore, ScrollPosition } from '@/store/uiStore';
 import { usePlaybackStore } from '@/store/playbackStore';
+import { SleepTimerControl } from './SleepTimerControl';
+import { useSleepTimer } from '@/hooks/useSleepTimer';
 
 interface SettingsSheetProps {
   isOpen: boolean;
@@ -73,6 +75,18 @@ export const SettingsSheet = memo(function SettingsSheet({
   // ASR (word timestamp refinement) settings from store
   const enableASR = usePlaybackStore((state) => state.enableASR);
   const setEnableASR = usePlaybackStore((state) => state.setEnableASR);
+
+  // Playback state for sleep timer
+  const isPlaying = usePlaybackStore((state) => state.isPlaying);
+  const setIsPlaying = usePlaybackStore((state) => state.setIsPlaying);
+
+  // Sleep timer integration
+  const sleepTimer = useSleepTimer({
+    onTimerExpired: () => {
+      setIsPlaying(false);
+    },
+    isPlaying
+  });
 
   // Close on escape key
   useEffect(() => {
@@ -268,6 +282,19 @@ export const SettingsSheet = memo(function SettingsSheet({
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* Sleep Timer */}
+          <div className="settings-section">
+            <h3 className="settings-section-title">Sleep Timer</h3>
+            <p className="text-xs text-[var(--text-muted)] mb-2">Auto-pause after a set duration</p>
+            <SleepTimerControl
+              isActive={sleepTimer.isActive}
+              remainingFormatted={sleepTimer.remainingFormatted}
+              selectedPreset={sleepTimer.selectedPreset}
+              onStart={sleepTimer.startTimer}
+              onStop={sleepTimer.stopTimer}
+            />
           </div>
 
           {/* Chapters */}

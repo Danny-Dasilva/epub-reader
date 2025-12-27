@@ -5,6 +5,7 @@ import { useNavigationStore } from '@/store/navigationStore';
 import { usePlaybackStore } from '@/store/playbackStore';
 import { useTTSStore } from '@/store/ttsStore';
 import { useSentenceStateStore, setHighlight, clearHighlight, setAudioPosition, clearAudioPosition, addToPlayedTime } from '@/store/sentenceStateStore';
+import { useSleepTimerStore } from '@/store/sleepTimerStore';
 import {
   AudioSyncService,
   initializeAudioSyncService,
@@ -74,6 +75,11 @@ export function useAudioPlayback() {
   const clearSentenceStates = useSentenceStateStore(state => state.clearSentenceStates);
   const markASRComplete = useSentenceStateStore(state => state.markASRComplete);
   const clearASRCompleted = useSentenceStateStore(state => state.clearASRCompleted);
+
+  // Sleep timer store
+  const sleepTimerActive = useSleepTimerStore(state => state.isActive);
+  const sleepTimerPreset = useSleepTimerStore(state => state.selectedPreset);
+  const stopSleepTimer = useSleepTimerStore(state => state.stopTimer);
 
   // Fix 10: Use ref instead of state for session.sentenceId to avoid extra effect runs
   const sessionSentenceIdRef = useRef(session.sentenceId);
@@ -226,10 +232,6 @@ export function useAudioPlayback() {
           break;
 
         case 'sentenceEnd': {
-          // Optimization #7: Batch state updates to reduce React reconciliation during transitions
-          // Critical path (navigation) must be synchronous for gapless audio
-          // Non-critical visual updates are deferred to microtask
-
           // Add completed sentence duration to cumulative time (for accurate timestamp display)
           if (event.duration !== undefined && event.duration > 0) {
             addToPlayedTime(event.duration);
@@ -238,13 +240,10 @@ export function useAudioPlayback() {
           const sentenceId = event.sentenceId;
           const isGapless = service?.isGaplessMode() ?? false;
 
-          // Legacy mode: Advance navigation synchronously (critical for audio continuity)
-          let hasNext = true;
-          if (!isGapless) {
-            hasNext = nextSentence();
-          }
+          // For gapless mode: player handles transitions internally via sentenceStart events
+          // For streaming/legacy: we handle advancement in microtask to avoid race conditions
 
-          // Defer non-critical state updates to microtask to avoid blocking audio playback
+          // Defer ALL state updates to microtask to avoid race conditions with play effect
           queueMicrotask(() => {
             // Mark sentence as played (visual feedback)
             if (sentenceId && service) {
@@ -253,13 +252,31 @@ export function useAudioPlayback() {
               });
             }
 
-            // Update pause state (both modes)
-            setPaused(false);
+            // Only clear pause state if still playing
+            // This prevents clearing pause when user has explicitly paused
+            if (usePlaybackStore.getState().isPlaying) {
+              setPaused(false);
+            }
 
-            // Handle end of chapter (legacy mode only)
-            if (!isGapless && !hasNext) {
-              setIsPlaying(false);
-              updateSessionSentence('');
+            // Handle sentence advancement for non-gapless modes (streaming and legacy)
+            // Moving this here prevents race condition with the play effect
+            if (!isGapless) {
+              const stillPlaying = usePlaybackStore.getState().isPlaying;
+              if (stillPlaying) {
+                const hasNext = nextSentence();
+                if (!hasNext) {
+                  // End of chapter - handle sleep timer
+                  const currentSleepTimerActive = useSleepTimerStore.getState().isActive;
+                  const currentSleepTimerPreset = useSleepTimerStore.getState().selectedPreset;
+
+                  if (currentSleepTimerActive && currentSleepTimerPreset === 'chapter_end') {
+                    stopSleepTimer();
+                  }
+                  setIsPlaying(false);
+                  updateSessionSentence('');
+                }
+                // If hasNext, the play effect will be triggered by currentSentenceIndex change
+              }
             }
           });
           break;
