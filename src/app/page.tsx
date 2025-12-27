@@ -6,6 +6,8 @@ import { parseEpub } from '@/lib/epub';
 import { useLibraryStore, StoredBook } from '@/store/libraryStore';
 import { usePlaybackStore } from '@/store/playbackStore';
 import { migrateFromSessionStorage } from '@/lib/storage';
+import { useLastReadBook } from '@/hooks/useLastReadBook';
+import { ContinueReadingCard } from '@/components/ContinueReadingCard';
 
 // Icons as inline SVGs
 const BookIcon = () => (
@@ -39,6 +41,7 @@ export default function LibraryPage() {
 
   const { books, addBook, removeBook, loadBooksFromDB, addBookToDB } = useLibraryStore();
   const enableIndexedDBStorage = usePlaybackStore(state => state.enableIndexedDBStorage);
+  const lastReadBook = useLastReadBook();
 
   // Load books from IndexedDB on mount
   useEffect(() => {
@@ -153,6 +156,13 @@ export default function LibraryPage() {
       </header>
 
       <main className="max-w-6xl mx-auto px-6 py-12">
+        {/* Continue Reading Section */}
+        {lastReadBook && (
+          <section className="mb-12 animate-fade-in">
+            <ContinueReadingCard book={lastReadBook} />
+          </section>
+        )}
+
         {/* Upload Section */}
         <section className="mb-16 animate-fade-in animate-fade-in-delay-1">
           <input

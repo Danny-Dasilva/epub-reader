@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { ParsedBook, getReadingProgress } from '@/lib/epub';
 import { calculatePagination, PaginationData, getPageForSentence } from '@/lib/epub/pagination';
 import { useNavigationStore } from '@/store/navigationStore';
@@ -18,6 +18,7 @@ import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useAutoScroll } from '@/hooks/useAutoScroll';
 import { useMediaSession } from '@/hooks/useMediaSession';
 import { useBookSearch } from '@/hooks/useBookSearch';
+import { useTimeEstimation } from '@/hooks/useTimeEstimation';
 import { VirtualizedSentenceList } from '@/components/VirtualizedSentenceList';
 import { Timeline } from '@/components/Timeline';
 import { PlaybackControls } from '@/components/PlaybackControls';
@@ -54,6 +55,7 @@ function estimateReadingTime(sentenceCount: number, wordsPerSentence = 15, wpm =
 export default function ReaderPage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const bookId = params.bookId as string;
   const contentRef = useRef<HTMLDivElement>(null);
   const mainRef = useRef<HTMLElement>(null);
@@ -62,6 +64,11 @@ export default function ReaderPage() {
   const [pagination, setPagination] = useState<PaginationData | null>(null);
   const [loading, setLoading] = useState(true);
   const [showSearch, setShowSearch] = useState(false);
+
+  // Parse URL search params for quick resume
+  const urlChapter = searchParams.get('chapter');
+  const urlSentence = searchParams.get('sentence');
+  const urlAutoplay = searchParams.get('autoplay');
 
   // Navigation store
   const currentBook = useNavigationStore(state => state.currentBook);
@@ -170,6 +177,14 @@ export default function ReaderPage() {
     containerRef: mainRef
   });
 
+  // Calculate time estimates based on reading pace
+  const timeEstimate = useTimeEstimation(
+    book,
+    currentChapterIndex,
+    currentSentenceIndex,
+    isPlaying
+  );
+
   // Load book from IndexedDB or sessionStorage
   useEffect(() => {
     const loadBook = async () => {
@@ -209,15 +224,35 @@ export default function ReaderPage() {
         // Calculate pagination for page numbers
         setPagination(calculatePagination(parsedBook));
 
-        // Restore saved reading position
-        const savedProgress = getProgress(bookId);
-        if (savedProgress) {
-          // Validate saved position is within bounds
-          if (savedProgress.chapterIndex < parsedBook.chapters.length) {
-            setChapter(savedProgress.chapterIndex);
-            const chapter = parsedBook.chapters[savedProgress.chapterIndex];
-            if (savedProgress.sentenceIndex < chapter.sentences.length) {
-              setSentenceIndex(savedProgress.sentenceIndex);
+        // Check for URL params first (for quick resume)
+        if (urlChapter !== null && urlSentence !== null) {
+          const chapterIndex = parseInt(urlChapter, 10);
+          const sentenceIndex = parseInt(urlSentence, 10);
+
+          // Validate URL params are within bounds
+          if (
+            !isNaN(chapterIndex) &&
+            !isNaN(sentenceIndex) &&
+            chapterIndex >= 0 &&
+            chapterIndex < parsedBook.chapters.length
+          ) {
+            const chapter = parsedBook.chapters[chapterIndex];
+            if (sentenceIndex >= 0 && sentenceIndex < chapter.sentences.length) {
+              setChapter(chapterIndex);
+              setSentenceIndex(sentenceIndex);
+            }
+          }
+        } else {
+          // Restore saved reading position (if no URL params)
+          const savedProgress = getProgress(bookId);
+          if (savedProgress) {
+            // Validate saved position is within bounds
+            if (savedProgress.chapterIndex < parsedBook.chapters.length) {
+              setChapter(savedProgress.chapterIndex);
+              const chapter = parsedBook.chapters[savedProgress.chapterIndex];
+              if (savedProgress.sentenceIndex < chapter.sentences.length) {
+                setSentenceIndex(savedProgress.sentenceIndex);
+              }
             }
           }
         }
@@ -231,7 +266,7 @@ export default function ReaderPage() {
     };
 
     loadBook();
-  }, [bookId, router, enableIndexedDBStorage, setCurrentBook, setChapter, setSentenceIndex, getProgress, updateLastRead]);
+  }, [bookId, router, enableIndexedDBStorage, setCurrentBook, setChapter, setSentenceIndex, getProgress, updateLastRead, urlChapter, urlSentence]);
 
   // Save reading progress when position changes
   useEffect(() => {
@@ -239,6 +274,32 @@ export default function ReaderPage() {
       saveProgress(bookId, currentChapterIndex, currentSentenceIndex);
     }
   }, [bookId, book, currentChapterIndex, currentSentenceIndex, saveProgress]);
+
+  // Handle autoplay from URL param (for quick resume)
+  useEffect(() => {
+    if (
+      !loading &&
+      book &&
+      urlAutoplay === 'true' &&
+      !isPlaying &&
+      isServiceReady &&
+      ttsReady
+    ) {
+      // Start playback automatically after a short delay to ensure everything is initialized
+      const timer = setTimeout(() => {
+        const chapter = book.chapters[currentChapterIndex];
+        if (chapter) {
+          const sentence = chapter.sentences[currentSentenceIndex];
+          if (sentence) {
+            setHighlight(sentence.id, null);
+          }
+        }
+        audioPlayPause();
+      }, 500);
+
+      return () => clearTimeout(timer);
+    }
+  }, [loading, book, urlAutoplay, isPlaying, isServiceReady, ttsReady, currentChapterIndex, currentSentenceIndex, audioPlayPause]);
 
   // Scroll to and highlight restored position on initial load
   const hasScrolledToPosition = useRef(false);
@@ -605,6 +666,8 @@ export default function ReaderPage() {
             currentTime={displayTime}
             enableASR={enableASR}
             bookProgress={bookProgress}
+            timeEstimate={timeEstimate}
+            isPlaying={isPlaying}
           />
 
           {/* Playback Controls */}

@@ -199,8 +199,22 @@ export class AudioSyncService {
     this.stateCallback?.(sentence.id, 'playing');
 
     try {
-      // Initialize streaming worklet
-      const worklet = await this.player.startStreamingPlayback(sentence.id);
+      // Generate estimated word timestamps for word highlighting
+      const wordTimestamps = this.generateEstimatedTimestamps(sentence.text, this.config.speed || 1.0);
+
+      // Create SentenceAudio object for tracking (some fields not used in streaming mode)
+      const sentenceAudio: SentenceAudio = {
+        sentenceId: sentence.id,
+        text: sentence.text,
+        rawPcm: new Float32Array(0),  // Not used for streaming
+        sampleRate: 44100,  // Not used for streaming
+        wordTimestamps,
+        duration: 0,  // Will be calculated when streaming ends
+        timestampSource: 'estimated',
+      };
+
+      // Initialize streaming worklet with sentence data for word tracking
+      const worklet = await this.player.startStreamingPlayback(sentenceAudio);
 
       // Start streaming synthesis
       await this.ttsManager.synthesizeStreaming(
@@ -378,10 +392,12 @@ export class AudioSyncService {
   }
 
   /**
-   * Pause playback (handles both legacy and gapless modes)
+   * Pause playback (handles streaming, gapless, and legacy modes)
    */
   pause(): void {
-    if (this.player.isGaplessMode()) {
+    if (this.player.isStreaming()) {
+      this.player.pauseStreaming();
+    } else if (this.player.isGaplessMode()) {
       this.player.pauseGapless();
     } else {
       this.player.pause();
@@ -389,10 +405,12 @@ export class AudioSyncService {
   }
 
   /**
-   * Resume playback (handles both legacy and gapless modes)
+   * Resume playback (handles streaming, gapless, and legacy modes)
    */
   resume(): void {
-    if (this.player.isGaplessMode()) {
+    if (this.player.isStreaming()) {
+      this.player.resumeStreaming();
+    } else if (this.player.isGaplessMode()) {
       this.player.resumeGapless();
     } else {
       this.player.resume();
@@ -577,6 +595,31 @@ export class AudioSyncService {
     if (!enabled) {
       this.preloadManager.clearASRQueue();
     }
+  }
+
+  /**
+   * Generate estimated word timestamps from text for streaming mode
+   * Uses character-weighted estimation similar to PreloadQueueManager
+   */
+  private generateEstimatedTimestamps(text: string, speed: number): WordTimestamp[] {
+    const words = text.split(/\s+/).filter(w => w.length > 0);
+    if (words.length === 0) return [];
+
+    const totalChars = words.reduce((sum, w) => sum + w.length, 0);
+    // Estimate ~15 chars/sec at 1.0 speed, adjusted for actual speed
+    const estimatedDuration = (totalChars / 15) / speed;
+
+    let currentTime = 0;
+    return words.map(word => {
+      const wordDuration = (word.length / totalChars) * estimatedDuration;
+      const timestamp: WordTimestamp = {
+        text: word,
+        start: currentTime,
+        end: currentTime + wordDuration,
+      };
+      currentTime += wordDuration;
+      return timestamp;
+    });
   }
 
   /**

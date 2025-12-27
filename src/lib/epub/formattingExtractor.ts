@@ -4,7 +4,51 @@
  */
 
 import { FormattingSpan, FormattingType, BlockBoundary, BlockType } from './types';
-import { cleanText } from './textExtractor';
+
+/**
+ * Clean text while preserving boundary whitespace
+ * Unlike cleanText() from textExtractor, this doesn't trim leading/trailing spaces
+ * which is important for proper word separation when concatenating text nodes
+ */
+function cleanTextPreserveWhitespace(text: string): string {
+  // Check for leading/trailing whitespace before cleaning
+  const hadLeadingSpace = /^\s/.test(text);
+  const hadTrailingSpace = /\s$/.test(text);
+
+  // Apply all the same transformations as cleanText
+  let cleaned = text
+    // Replace dashes, semicolons, colons, double quotes, ellipses → comma
+    .replace(/--|—|–|;|:|''| \. \. \. |\.\.\. |…/g, ', ')
+    // Normalize smart quotes (apostrophes)
+    .replace(/['']/g, "'")
+    // Normalize smart quotes (double quotes)
+    .replace(/[""«»]/g, '"')
+    // Remove special chars
+    .replace(/[◇\[\]]/g, '')
+    // Replace asterisk with space
+    .replace(/\*/g, ' ')
+    // Replace ampersand
+    .replace(/&/g, ' and ')
+    // Normalize newlines
+    .replace(/\n/g, ' ')
+    // Fix spacing around punctuation
+    .replace(/ ([,\.!\?])/g, '$1')
+    // Normalize multiple spaces to single
+    .replace(/\s+/g, ' ')
+    // Trim, then restore boundary whitespace
+    .trim();
+
+  // Restore single space at boundaries if original had whitespace
+  // This preserves word separation when text nodes are concatenated
+  if (hadLeadingSpace && cleaned.length > 0) {
+    cleaned = ' ' + cleaned;
+  }
+  if (hadTrailingSpace && cleaned.length > 0 && !cleaned.endsWith(' ')) {
+    cleaned = cleaned + ' ';
+  }
+
+  return cleaned;
+}
 
 // HTML tags to remove (blacklist from epub2tts.py)
 const BLACKLIST_TAGS = new Set([
@@ -96,7 +140,7 @@ function processNode(node: Node, state: ExtractorState): void {
 
   if (node.nodeType === Node.TEXT_NODE) {
     const text = node.textContent || '';
-    const cleaned = cleanText(text);
+    const cleaned = cleanTextPreserveWhitespace(text);
 
     if (cleaned.length > 0) {
       // Record formatting spans for this text
@@ -163,8 +207,49 @@ function processNode(node: Node, state: ExtractorState): void {
     };
   }
 
-  // Process children
-  for (const child of Array.from(node.childNodes)) {
+  // Process children with whitespace normalization between adjacent inline elements
+  const children = Array.from(node.childNodes);
+  for (let i = 0; i < children.length; i++) {
+    const child = children[i];
+    const prevChild = i > 0 ? children[i - 1] : null;
+
+    // Check if we need to add whitespace between adjacent inline elements
+    // This handles cases like <em>Have</em><em>you</em> which would otherwise concatenate
+    if (prevChild && prevChild.nodeType === Node.ELEMENT_NODE && child.nodeType === Node.ELEMENT_NODE) {
+      const prevTag = (prevChild as Element).tagName.toLowerCase();
+      const currTag = (child as Element).tagName.toLowerCase();
+
+      // Both are inline formatting tags with no whitespace between them
+      if (FORMATTING_TAGS[prevTag] && FORMATTING_TAGS[currTag]) {
+        // Check if text doesn't already end with whitespace
+        if (state.text.length > 0 && !/\s$/.test(state.text)) {
+          // Check if current element starts with a word character
+          const currText = (child as Element).textContent || '';
+          if (currText.length > 0 && /^[\w''"]/.test(currText)) {
+            state.text += ' ';
+            state.position += 1;
+          }
+        }
+      }
+    }
+
+    // Also handle case where inline element follows text node that doesn't end with space
+    // and the inline element starts a new word
+    if (prevChild && prevChild.nodeType === Node.TEXT_NODE && child.nodeType === Node.ELEMENT_NODE) {
+      const currTag = (child as Element).tagName.toLowerCase();
+      if (FORMATTING_TAGS[currTag]) {
+        const prevText = prevChild.textContent || '';
+        const currText = (child as Element).textContent || '';
+        // If previous text doesn't end with whitespace and current starts with word char
+        if (prevText.length > 0 && !/\s$/.test(prevText) &&
+            currText.length > 0 && /^[\w]/.test(currText) &&
+            state.text.length > 0 && !/\s$/.test(state.text)) {
+          state.text += ' ';
+          state.position += 1;
+        }
+      }
+    }
+
     processNode(child, state);
   }
 

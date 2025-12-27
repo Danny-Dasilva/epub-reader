@@ -508,6 +508,9 @@ export class PreloadQueueManager {
     const totalSamples = result.wav.length;
     const totalDuration = result.duration;
 
+    // Minimum samples per sentence (100ms at sample rate) to prevent short sentences from being skipped
+    const minSamplesPerSentence = Math.ceil(result.sampleRate * 0.1);
+
     const audioObjects: SentenceAudio[] = [];
     let prevCharEnd = 0;
     let prevSampleEnd = 0;
@@ -519,12 +522,31 @@ export class PreloadQueueManager {
       const charRatio = (charEnd - prevCharEnd) / totalChars;
 
       // Calculate sample and time boundaries (character-weighted)
-      const sampleEnd = Math.floor(prevSampleEnd + charRatio * totalSamples);
+      let sampleEnd = Math.floor(prevSampleEnd + charRatio * totalSamples);
       const timeEnd = prevTimeEnd + charRatio * totalDuration;
 
+      // Ensure minimum audio length for short sentences
+      // This prevents Math.floor() from rounding down to zero for very short sentences
+      // Apply to ALL sentences including the last one
+      const requestedSamples = sampleEnd - prevSampleEnd;
+      if (requestedSamples < minSamplesPerSentence) {
+        // Borrow samples from the remaining pool, but don't exceed total
+        sampleEnd = Math.min(prevSampleEnd + minSamplesPerSentence, totalSamples);
+      }
+
       // Slice audio for this sentence
-      const sentenceWav = result.wav.slice(prevSampleEnd, sampleEnd);
-      const sentenceDuration = timeEnd - prevTimeEnd;
+      let sentenceWav = result.wav.slice(prevSampleEnd, sampleEnd);
+      let sentenceDuration = timeEnd - prevTimeEnd;
+
+      // If still no audio after minimum enforcement, create placeholder with silence
+      // This prevents sentences from being skipped which causes audio offset issues
+      if (sentenceWav.length === 0) {
+        console.warn(`[PreloadQueueManager] Creating placeholder audio for sentence "${sentence.id}" (${sentence.text.slice(0, 30)}...)`);
+        // Create 100ms of silence so sentence isn't skipped
+        const silentSamples = Math.ceil(result.sampleRate * 0.1);
+        sentenceWav = new Float32Array(silentSamples);
+        sentenceDuration = 0.1;
+      }
 
       // Skip WAV/blob URL creation here - defer until playback for faster preloading
       // Estimate word timings for this sentence

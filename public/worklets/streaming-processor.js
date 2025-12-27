@@ -13,10 +13,12 @@ class StreamingProcessor extends AudioWorkletProcessor {
     this.writePos = 0;
     this.readPos = 0;
     this.isStarted = false;
+    this.isPaused = false;
 
     // Start playback after 500ms of audio is buffered
     this.startThreshold = 44100 * 0.5;
     this.isComplete = false;
+    this.hasEnded = false;  // Guard to send 'ended' only once
 
     // Handle messages from main thread
     this.port.onmessage = (e) => {
@@ -26,6 +28,10 @@ class StreamingProcessor extends AudioWorkletProcessor {
         this.isComplete = true;
       } else if (e.data.type === 'reset') {
         this.reset();
+      } else if (e.data.type === 'pause') {
+        this.isPaused = true;
+      } else if (e.data.type === 'resume') {
+        this.isPaused = false;
       }
     };
   }
@@ -54,6 +60,8 @@ class StreamingProcessor extends AudioWorkletProcessor {
     this.readPos = 0;
     this.isStarted = false;
     this.isComplete = false;
+    this.hasEnded = false;  // Reset the ended guard for new sentence
+    this.isPaused = false;
   }
 
   process(inputs, outputs) {
@@ -63,8 +71,8 @@ class StreamingProcessor extends AudioWorkletProcessor {
       return true;
     }
 
-    // Fill with silence until playback starts
-    if (!this.isStarted) {
+    // Fill with silence until playback starts or when paused
+    if (!this.isStarted || this.isPaused) {
       output.fill(0);
       return true;
     }
@@ -79,10 +87,13 @@ class StreamingProcessor extends AudioWorkletProcessor {
       }
     }
 
-    // Report progress and completion
-    if (this.isComplete && this.readPos >= this.writePos) {
+    // Report progress and completion (only when not paused)
+    // CRITICAL: Only send 'ended' ONCE to prevent duplicate sentenceEnd events
+    if (this.isComplete && this.readPos >= this.writePos && !this.hasEnded) {
+      this.hasEnded = true;
       this.port.postMessage({ type: 'ended' });
-    } else {
+    } else if (!this.hasEnded) {
+      // Only send progress while still playing (not after ended)
       const progress = this.writePos > 0 ? this.readPos / this.writePos : 0;
       this.port.postMessage({
         type: 'progress',
