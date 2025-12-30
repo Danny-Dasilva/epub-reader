@@ -56,6 +56,8 @@ export class PreloadQueueManager {
   private cache: Map<string, SentenceAudio> = new Map();
   // Optimization #2: Use min-heap for O(log n) insertion instead of O(n log n) sort
   private queue = new MinHeap<QueuedRequest>((a, b) => a.priority - b.priority);
+  // Performance optimization #4: O(1) queue membership check
+  private queuedIds = new Set<string>();
   private activeRequests: Map<string, QueuedRequest> = new Map();  // Track concurrent TTS operations
   private sessionController: AbortController | null = null;
   private config: PreloadConfig;
@@ -72,7 +74,9 @@ export class PreloadQueueManager {
   private accessOrder: Map<string, number> = new Map();
 
   // ASR refinement for accurate word timestamps
-  private asrQueue: string[] = [];              // Sentence IDs pending ASR
+  // Performance optimization #8: Use Set for O(1) membership checks, array for FIFO order
+  private asrQueue: string[] = [];              // Sentence IDs pending ASR (FIFO order)
+  private asrQueueSet = new Set<string>();      // O(1) membership check
   private asrProcessing: string | null = null;  // Currently processing ASR
   private currentPlayingIndex: number = -1;     // Track playback position
   private currentSentences: Sentence[] = [];    // Current sentence list
@@ -206,12 +210,14 @@ export class PreloadQueueManager {
 
     // Queue sentences with priorities - Optimization #2: use heap for O(log n) insert
     this.queue.clear();
+    this.queuedIds.clear();  // Performance optimization #4
     toPreload.forEach((sentence, index) => {
       this.queue.push({
         sentence,
         priority: index,
         abortController: new AbortController()
       });
+      this.queuedIds.add(sentence.id);  // Performance optimization #4
     });
 
     // Link abort controllers to session (use once: true to prevent listener accumulation)
@@ -237,6 +243,7 @@ export class PreloadQueueManager {
     this.sessionController?.abort();
     this.sessionController = null;
     this.queue.clear();
+    this.queuedIds.clear();  // Performance optimization #4
     // Abort and clear all active requests
     this.activeRequests.forEach(req => req.abortController.abort());
     this.activeRequests.clear();
@@ -292,6 +299,7 @@ export class PreloadQueueManager {
         if (batch.length === 0) {
           // First sentence is long - just return it alone
           this.queue.pop();
+          this.queuedIds.delete(next.sentence.id);  // Performance optimization #4
           this.activeRequests.set(next.sentence.id, next);
           return {
             sentences: [next.sentence],
@@ -311,6 +319,7 @@ export class PreloadQueueManager {
 
       // Add to batch
       const request = this.queue.pop()!;
+      this.queuedIds.delete(request.sentence.id);  // Performance optimization #4
       batch.push(request.sentence);
       abortControllers.push(request.abortController);
       totalChars += textLen;
@@ -847,6 +856,7 @@ export class PreloadQueueManager {
       // Clear our internal queue and active requests
       // Don't change state - preloadFullChapter will re-mark items as 'preloading' when it re-queues them
       this.queue.clear();
+      this.queuedIds.clear();  // Performance optimization #4
       this.activeRequests.clear();
     }
 
@@ -910,8 +920,9 @@ export class PreloadQueueManager {
    */
   prioritize(sentence: Sentence): void {
     // Don't add if already cached, in queue, or being processed
+    // Performance optimization #4: O(1) check using Set instead of O(n) array.some()
     if (this.cache.has(sentence.id)) return;
-    if (this.queue.some(r => r.sentence.id === sentence.id)) return;
+    if (this.queuedIds.has(sentence.id)) return;
     if (this.activeRequests.has(sentence.id)) return;
 
     // Add with priority 0 (highest) - heap will place at front
@@ -920,6 +931,7 @@ export class PreloadQueueManager {
       priority: 0,
       abortController: new AbortController()
     });
+    this.queuedIds.add(sentence.id);  // Performance optimization #4
 
     this.stateCallback?.(sentence.id, 'preloading');
     this.processQueue();
@@ -945,8 +957,9 @@ export class PreloadQueueManager {
       const sentence = sentences[i];
 
       // Skip if already cached, queued, or being processed
+      // Performance optimization #4: O(1) check using Set instead of O(n) array.some()
       if (this.cache.has(sentence.id)) continue;
-      if (this.queue.some(r => r.sentence.id === sentence.id)) continue;
+      if (this.queuedIds.has(sentence.id)) continue;
       if (this.activeRequests.has(sentence.id)) continue;
 
       // Respect char limit (but always allow at least one)
@@ -975,6 +988,7 @@ export class PreloadQueueManager {
         priority: basePriority + index,
         abortController
       });
+      this.queuedIds.add(sentence.id);  // Performance optimization #4
 
       this.stateCallback?.(sentence.id, 'preloading');
     });
@@ -1007,12 +1021,14 @@ export class PreloadQueueManager {
 
     // Create queue with priorities - Optimization #2: use heap for O(log n) insert
     this.queue.clear();
+    this.queuedIds.clear();  // Performance optimization #4
     toPreload.forEach((sentence, index) => {
       this.queue.push({
         sentence,
         priority: index,
         abortController: new AbortController()
       });
+      this.queuedIds.add(sentence.id);  // Performance optimization #4
     });
 
     // Link abort controllers to session (use once: true to prevent listener accumulation)
@@ -1035,9 +1051,10 @@ export class PreloadQueueManager {
 
   /**
    * Check if a sentence is currently queued
+   * Performance optimization #4: O(1) using Set instead of O(n) array.some()
    */
   isQueued(sentenceId: string): boolean {
-    return this.queue.some(r => r.sentence.id === sentenceId);
+    return this.queuedIds.has(sentenceId);
   }
 
   /**
@@ -1150,6 +1167,7 @@ export class PreloadQueueManager {
 
   /**
    * Queue sentences for ASR refinement when we're ahead enough
+   * Performance optimization #8: Uses Set for O(1) membership checks
    */
   private maybeQueueForASR(): void {
     console.log('[ASR] maybeQueueForASR called');
@@ -1163,10 +1181,12 @@ export class PreloadQueueManager {
     const currentSentence = this.currentSentences[this.currentPlayingIndex];
     if (currentSentence) {
       const currentAudio = this.cache.get(currentSentence.id);
+      // Performance optimization #8: O(1) Set lookup instead of O(n) array.includes()
       if (currentAudio?.timestampSource === 'estimated' &&
-          !this.asrQueue.includes(currentSentence.id) &&
+          !this.asrQueueSet.has(currentSentence.id) &&
           this.asrProcessing !== currentSentence.id) {
         this.asrQueue.unshift(currentSentence.id); // High priority
+        this.asrQueueSet.add(currentSentence.id);
       }
     }
 
@@ -1174,10 +1194,12 @@ export class PreloadQueueManager {
     for (let i = this.currentPlayingIndex + 1; i < this.currentSentences.length && i <= this.currentPlayingIndex + 3; i++) {
       const sentence = this.currentSentences[i];
       const audio = this.cache.get(sentence.id);
+      // Performance optimization #8: O(1) Set lookup instead of O(n) array.includes()
       if (audio?.timestampSource === 'estimated' &&
-          !this.asrQueue.includes(sentence.id) &&
+          !this.asrQueueSet.has(sentence.id) &&
           this.asrProcessing !== sentence.id) {
         this.asrQueue.push(sentence.id);
+        this.asrQueueSet.add(sentence.id);
       }
     }
 
@@ -1189,6 +1211,7 @@ export class PreloadQueueManager {
 
   /**
    * Process the ASR queue in background
+   * Performance optimization #8: Maintains Set sync when dequeuing
    */
   private async processASRQueue(): Promise<void> {
     console.log(`[ASR] processASRQueue: queue=${this.asrQueue.length}, processing=${this.asrProcessing}`);
@@ -1206,6 +1229,7 @@ export class PreloadQueueManager {
 
     const sentenceId = this.asrQueue.shift();
     if (!sentenceId) return;
+    this.asrQueueSet.delete(sentenceId);  // Performance optimization #8: Keep Set in sync
 
     const audio = this.cache.get(sentenceId);
     if (!audio || audio.timestampSource === 'asr') {
@@ -1346,9 +1370,11 @@ export class PreloadQueueManager {
 
   /**
    * Clear ASR queue (e.g., when seeking)
+   * Performance optimization #8: Also clears the Set
    */
   clearASRQueue(): void {
     this.asrQueue = [];
+    this.asrQueueSet.clear();  // Performance optimization #8
     // Note: asrProcessing will complete on its own
   }
 

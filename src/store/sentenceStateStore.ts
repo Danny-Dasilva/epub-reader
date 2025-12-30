@@ -22,11 +22,15 @@ export interface Highlight {
 type HighlightListener = (highlight: Highlight) => void;
 
 // ============================================================================
-// NON-REACTIVE HIGHLIGHT STATE (Fix 1 & 2)
+// NON-REACTIVE HIGHLIGHT STATE (Performance optimization #2)
 // ============================================================================
 // This state is updated 60x/second during playback and should NOT trigger
 // React re-renders. Components can read it via getHighlight() or subscribe
 // to updates via subscribeToHighlight() for manual rendering control.
+//
+// Performance optimization #2: Single subscriber pattern
+// Instead of iterating a Map of listeners on every update (60x/sec),
+// we use a single callback with identity check for O(1) operations.
 // ============================================================================
 
 let currentHighlight: Highlight = {
@@ -35,35 +39,40 @@ let currentHighlight: Highlight = {
   timestampSource: null
 };
 
-// Fix #6: Use Map with ID-based tracking for reliable cleanup
-// Auto-cleanup stale listeners after 5 minutes to prevent memory leaks
-interface ListenerEntry {
-  listener: HighlightListener;
-  timeout: ReturnType<typeof setTimeout>;
-}
-
-const highlightListeners = new Map<string, ListenerEntry>();
-let listenerIdCounter = 0;
-const LISTENER_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-const MAX_LISTENERS = 1000; // Safety limit
+// Performance optimization #2: Single callback instead of Map iteration
+let highlightCallback: HighlightListener | null = null;
 
 /**
  * Set the current highlight state (non-reactive - no re-renders)
  * Called 60x/second during audio playback with word-level timing
+ *
+ * Performance optimization #2 & #9: Skip if unchanged (identity check)
  */
 export const setHighlight = (
   sentenceId: string | null,
   wordIndex: number | null,
   timestampSource?: TimestampSource
 ): void => {
+  const newSentenceId = sentenceId ?? '';
+  const newTimestampSource = timestampSource ?? null;
+
+  // Performance optimization #9: Skip if unchanged (reduces downstream work)
+  if (
+    currentHighlight.sentenceId === newSentenceId &&
+    currentHighlight.wordIndex === wordIndex &&
+    currentHighlight.timestampSource === newTimestampSource
+  ) {
+    return;
+  }
+
   currentHighlight = {
-    sentenceId: sentenceId ?? '',
+    sentenceId: newSentenceId,
     wordIndex,
-    timestampSource: timestampSource ?? null
+    timestampSource: newTimestampSource
   };
 
-  // Notify all subscribers (they can use RAF to batch updates)
-  highlightListeners.forEach(entry => entry.listener(currentHighlight));
+  // Notify single subscriber (O(1) instead of forEach iteration)
+  highlightCallback?.(currentHighlight);
 };
 
 /**
@@ -75,39 +84,21 @@ export const getHighlight = (): Highlight => currentHighlight;
  * Subscribe to highlight changes
  * Returns unsubscribe function
  *
- * Note: Subscribers are called synchronously on every highlight update.
- * For rendering, consider using requestAnimationFrame to batch updates.
+ * Performance optimization #2: Single subscriber pattern
+ * Only one component should subscribe at a time (typically the reader page).
+ * This eliminates Map iteration overhead on every frame.
  *
- * Fix #6: Listeners auto-cleanup after 5 minutes if not manually unsubscribed.
- * This prevents memory leaks from components that fail to unsubscribe.
+ * Note: The subscriber is called synchronously on every highlight update.
+ * For rendering, consider using requestAnimationFrame to batch updates.
  */
 export const subscribeToHighlight = (listener: HighlightListener): (() => void) => {
-  // Safety check: prevent unbounded growth
-  if (highlightListeners.size >= MAX_LISTENERS) {
-    console.warn('[sentenceStateStore] Maximum highlight listeners reached, cleaning oldest');
-    // Remove oldest listener
-    const firstKey = highlightListeners.keys().next().value;
-    if (firstKey) {
-      const entry = highlightListeners.get(firstKey);
-      if (entry) clearTimeout(entry.timeout);
-      highlightListeners.delete(firstKey);
-    }
-  }
-
-  const id = `listener-${++listenerIdCounter}`;
-
-  // Auto-cleanup after timeout to prevent leaks from unmounted components
-  const timeout = setTimeout(() => {
-    highlightListeners.delete(id);
-  }, LISTENER_TIMEOUT_MS);
-
-  highlightListeners.set(id, { listener, timeout });
+  // Replace any existing listener (single subscriber pattern)
+  highlightCallback = listener;
 
   return () => {
-    const entry = highlightListeners.get(id);
-    if (entry) {
-      clearTimeout(entry.timeout);
-      highlightListeners.delete(id);
+    // Only clear if this is still the active listener
+    if (highlightCallback === listener) {
+      highlightCallback = null;
     }
   };
 };
@@ -251,47 +242,54 @@ export const useSentenceStateStore = create<SentenceStateStoreState & SentenceSt
 );
 
 // ============================================================================
-// OPTIMIZATION #5: DEBOUNCED TIMELINE STATE HOOK
+// PERFORMANCE OPTIMIZATION #7: RAF-COALESCED TIMELINE STATE HOOK
 // ============================================================================
 // During preloading, sentence states update every 50-200ms causing continuous
-// Timeline re-renders. This hook debounces updates to reduce render frequency
-// while still providing responsive visual feedback.
+// Timeline re-renders. This hook coalesces updates using requestAnimationFrame
+// for immediate visual feedback at display refresh rate (no arbitrary delay).
 // ============================================================================
 
 /**
- * Debounced hook for Timeline sentence states
- * Reduces re-renders from ~20/sec to ~6/sec during active preloading
+ * RAF-coalesced hook for Timeline sentence states
+ * Updates at display refresh rate instead of arbitrary debounce delay
+ *
+ * Performance optimization #7: Replaces 150ms debounce with RAF coalescing
+ * - Immediate visual feedback (no delay)
+ * - Natural 60fps cap from RAF
+ * - Multiple state updates within a frame are coalesced into one render
  */
-export const useDebouncedSentenceStates = (debounceMs = 150): SentenceStateMap => {
-  const [debouncedStates, setDebouncedStates] = useState<SentenceStateMap>(() =>
+export const useDebouncedSentenceStates = (_debounceMs = 150): SentenceStateMap => {
+  const [coalescedStates, setCoalescedStates] = useState<SentenceStateMap>(() =>
     useSentenceStateStore.getState().sentenceStates
   );
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const latestStatesRef = useRef<SentenceStateMap>(debouncedStates);
+  const rafRef = useRef<number | null>(null);
+  const dirtyRef = useRef(false);
+  const latestStatesRef = useRef<SentenceStateMap>(coalescedStates);
 
   useEffect(() => {
     const unsubscribe = useSentenceStateStore.subscribe((state) => {
       latestStatesRef.current = state.sentenceStates;
+      dirtyRef.current = true;
 
-      // Clear any pending timeout
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
+      // Schedule RAF update if not already scheduled
+      if (rafRef.current === null) {
+        rafRef.current = requestAnimationFrame(() => {
+          if (dirtyRef.current) {
+            setCoalescedStates(latestStatesRef.current);
+            dirtyRef.current = false;
+          }
+          rafRef.current = null;
+        });
       }
-
-      // Debounce the state update
-      timeoutRef.current = setTimeout(() => {
-        setDebouncedStates(latestStatesRef.current);
-        timeoutRef.current = null;
-      }, debounceMs);
     });
 
     return () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
       }
       unsubscribe();
     };
-  }, [debounceMs]);
+  }, []);
 
-  return debouncedStates;
+  return coalescedStates;
 };

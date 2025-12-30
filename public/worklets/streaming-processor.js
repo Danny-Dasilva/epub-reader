@@ -21,6 +21,11 @@ class StreamingProcessor extends AudioWorkletProcessor {
     // Track samples consumed for accurate time reporting
     this.samplesConsumed = 0;
 
+    // Performance optimization #1: Throttle progress messages to 30Hz
+    // Reduces cross-thread serialization from 344Hz to 30Hz
+    this.lastProgressTime = 0;
+    this.progressThrottleMs = 33; // ~30Hz
+
     // Start playback after 500ms of audio is buffered
     this.startThreshold = 44100 * 0.5;
     this.isComplete = false;
@@ -40,8 +45,30 @@ class StreamingProcessor extends AudioWorkletProcessor {
         this.isPaused = false;
       } else if (e.data.type === 'setPlaybackRate') {
         this.playbackRate = Math.max(0.5, Math.min(2.0, e.data.rate));
+      } else if (e.data.type === 'preallocate') {
+        // Performance optimization #10: Pre-allocate buffer based on estimated duration
+        this.preallocateBuffer(e.data.estimatedSamples);
       }
     };
+  }
+
+  /**
+   * Performance optimization #10: Pre-allocate buffer for expected sentence length
+   * Reduces dynamic reallocations during streaming
+   */
+  preallocateBuffer(estimatedSamples) {
+    // Add 20% headroom for safety
+    const targetSize = Math.ceil(estimatedSamples * 1.2);
+
+    // Only reallocate if we need more space
+    if (targetSize > this.buffer.length) {
+      const newBuffer = new Float32Array(targetSize);
+      // Copy existing data if any
+      if (this.writePos > 0) {
+        newBuffer.set(this.buffer.subarray(0, this.writePos));
+      }
+      this.buffer = newBuffer;
+    }
   }
 
   appendChunk(chunk) {
@@ -75,6 +102,7 @@ class StreamingProcessor extends AudioWorkletProcessor {
     this.isComplete = false;
     this.hasEnded = false;  // Reset the ended guard for new sentence
     this.isPaused = false;
+    this.lastProgressTime = 0;  // Reset progress throttle
     // Note: playbackRate is intentionally preserved across resets
   }
 
@@ -126,15 +154,20 @@ class StreamingProcessor extends AudioWorkletProcessor {
         samplesConsumed: this.samplesConsumed
       });
     } else if (!this.hasEnded) {
-      // Only send progress while still playing (not after ended)
-      const progress = this.writePos > 0 ? intReadPos / this.writePos : 0;
-      this.port.postMessage({
-        type: 'progress',
-        progress,
-        readPos: intReadPos,
-        writePos: this.writePos,
-        samplesConsumed: this.samplesConsumed
-      });
+      // Performance optimization #1: Throttle progress to 30Hz
+      // Calculate current time in ms from samples consumed
+      const currentTimeMs = (this.samplesConsumed / 44100) * 1000;
+      if (currentTimeMs - this.lastProgressTime >= this.progressThrottleMs) {
+        this.lastProgressTime = currentTimeMs;
+        const progress = this.writePos > 0 ? intReadPos / this.writePos : 0;
+        this.port.postMessage({
+          type: 'progress',
+          progress,
+          readPos: intReadPos,
+          writePos: this.writePos,
+          samplesConsumed: this.samplesConsumed
+        });
+      }
     }
 
     return true;
