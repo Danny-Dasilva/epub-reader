@@ -72,6 +72,10 @@ export function useSleepTimer(options: UseSleepTimerOptions): UseSleepTimerRetur
       return;
     }
 
+    // Fix #5: Reset lastTickRef when starting a new interval
+    // This prevents huge delta values after pause/resume cycles
+    lastTickRef.current = Date.now();
+
     // Start interval
     intervalRef.current = setInterval(() => {
       const now = Date.now();
