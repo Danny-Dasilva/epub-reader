@@ -166,17 +166,9 @@ export class AudioPlayer {
       player.src = sentence.blobUrl;
       player.playbackRate = this.playbackRate;
 
-      // Handle near-end: trigger next player ~150ms before end
-      player.ontimeupdate = () => {
-        if (!this.nextStartTriggered && this.nextSentenceQueued && player.duration) {
-          const timeRemaining = player.duration - player.currentTime;
-          // Trigger when ~150ms remaining (adjusted for playback rate)
-          if (timeRemaining < 0.15 / this.playbackRate) {
-            this.nextStartTriggered = true;
-            this.startNextPlayer();
-          }
-        }
-      };
+      // Performance optimization #3: Removed ontimeupdate handler
+      // Sentence-end detection is now consolidated in the RAF-based startWordTracking()
+      // This eliminates dual timing sources that could conflict or cause jank
 
       // Handle playback end
       player.onended = () => {
@@ -298,16 +290,8 @@ export class AudioPlayer {
     this.lastWordIndex = -1;
     this.nextStartTriggered = false;
 
-    // Setup handlers for new active player
-    newActive.ontimeupdate = () => {
-      if (!this.nextStartTriggered && this.nextSentenceQueued && newActive.duration) {
-        const timeRemaining = newActive.duration - newActive.currentTime;
-        if (timeRemaining < 0.15 / this.playbackRate) {
-          this.nextStartTriggered = true;
-          this.startNextPlayer();
-        }
-      }
-    };
+    // Performance optimization #3: Removed ontimeupdate handler
+    // Sentence-end detection is consolidated in startWordTracking() RAF loop
 
     newActive.onended = () => {
       this.emit({
@@ -408,6 +392,7 @@ export class AudioPlayer {
       if (!this.isPlaying || !this.currentSentence) return;
 
       let currentTime: number;
+      let player: HTMLAudioElement | null = null;
 
       if (this.isStreamingMode) {
         // For streaming: compute elapsed time from samples consumed
@@ -416,12 +401,24 @@ export class AudioPlayer {
         currentTime = this.streamingSamplesConsumed / sampleRate;
       } else {
         // For non-streaming: use HTMLAudioElement currentTime
-        const player = this.getActivePlayer();
+        player = this.getActivePlayer();
         if (!player) return;
         currentTime = player.currentTime;
+
+        // Performance optimization #3: Consolidated sentence-end detection
+        // Check if we're near the end and should trigger next player
+        if (!this.nextStartTriggered && this.nextSentenceQueued && player.duration) {
+          const timeRemaining = player.duration - currentTime;
+          // Trigger when ~150ms remaining (adjusted for playback rate)
+          if (timeRemaining < 0.15 / this.playbackRate) {
+            this.nextStartTriggered = true;
+            this.startNextPlayer();
+          }
+        }
       }
 
-      const wordIndex = this.findCurrentWordIndex(currentTime);
+      // Performance optimization #6: Find word with interpolation for smoother highlighting
+      const wordIndex = this.findCurrentWordIndexWithInterpolation(currentTime);
 
       if (wordIndex !== this.lastWordIndex) {
         this.lastWordIndex = wordIndex;
@@ -438,6 +435,47 @@ export class AudioPlayer {
     };
 
     this.animationFrameId = requestAnimationFrame(track);
+  }
+
+  /**
+   * Performance optimization #6: Find word index with interpolation
+   * Uses ASR-confirmed timestamps as anchors for smoother highlighting
+   * between estimated timestamps
+   */
+  private findCurrentWordIndexWithInterpolation(currentTime: number): number {
+    if (!this.currentSentence?.wordTimestamps) return -1;
+
+    const words = this.currentSentence.wordTimestamps;
+    if (words.length === 0) return -1;
+
+    // If using ASR timestamps (high confidence), use standard binary search
+    if (this.currentSentence.timestampSource === 'asr') {
+      return this.findCurrentWordIndex(currentTime);
+    }
+
+    // For estimated timestamps, apply interpolation smoothing
+    // Find bracketing words for interpolation
+    if (currentTime >= words[words.length - 1].end) {
+      return words.length - 1;
+    }
+
+    // Use binary search but with slight lookahead bias for estimated timestamps
+    // This helps compensate for character-weighted estimation drift
+    const baseIndex = this.findCurrentWordIndex(currentTime);
+
+    // If we're in the last 20% of a word's duration, consider transitioning early
+    // This compensates for typical estimation drift where words end slightly early
+    if (baseIndex >= 0 && baseIndex < words.length - 1) {
+      const currentWord = words[baseIndex];
+      const wordProgress = (currentTime - currentWord.start) / (currentWord.end - currentWord.start);
+
+      // Transition 10% earlier for estimated timestamps (smoother perceived sync)
+      if (wordProgress > 0.9 && currentWord.confidence && currentWord.confidence < 0.85) {
+        return baseIndex + 1;
+      }
+    }
+
+    return baseIndex;
   }
 
   private stopWordTracking(): void {

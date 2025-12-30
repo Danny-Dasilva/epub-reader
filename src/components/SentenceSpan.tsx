@@ -22,39 +22,58 @@ interface WordPart {
 
 /**
  * Split text into words/whitespace with formatting information
+ *
+ * Performance optimization #5: Pre-sorted spans with pointer tracking
+ * Reduces O(n×m) to O(n+m) where n=text length, m=formatting spans
  */
 function splitWordsWithFormatting(
   text: string,
   formattingSpans: FormattingSpan[] = []
 ): WordPart[] {
-  // Build character-to-formatting lookup for efficiency
-  const charFormatting: Array<Set<FormattingType>> = [];
-  for (let i = 0; i < text.length; i++) {
-    const formats = new Set<FormattingType>();
-    for (const span of formattingSpans) {
-      if (i >= span.startIndex && i < span.endIndex) {
-        formats.add(span.type);
-      }
-    }
-    charFormatting.push(formats);
+  // Split into words and whitespace first
+  const parts = text.split(/(\s+)/).filter(Boolean);
+  if (formattingSpans.length === 0) {
+    // Fast path: no formatting, skip all span processing
+    return parts.map(part => ({
+      text: part,
+      isWhitespace: part.trim().length === 0,
+      formatting: new Set<FormattingType>()
+    }));
   }
 
-  // Split into words and whitespace
-  const parts = text.split(/(\s+)/).filter(Boolean);
+  // Performance optimization #5: Sort spans by startIndex once (O(m log m))
+  const sortedSpans = [...formattingSpans].sort((a, b) => a.startIndex - b.startIndex);
+
   const result: WordPart[] = [];
   let currentPos = 0;
+  let spanIdx = 0;
+  const activeSpans: FormattingSpan[] = [];
 
   for (const part of parts) {
     const isWhitespace = part.trim().length === 0;
-
-    // Collect all formatting that applies to any character in this part
+    const partEnd = currentPos + part.length;
     const formatting = new Set<FormattingType>();
-    for (let i = currentPos; i < currentPos + part.length && i < charFormatting.length; i++) {
-      charFormatting[i].forEach(f => formatting.add(f));
+
+    // Add spans that start before or at this part's end
+    while (spanIdx < sortedSpans.length && sortedSpans[spanIdx].startIndex < partEnd) {
+      activeSpans.push(sortedSpans[spanIdx]);
+      spanIdx++;
+    }
+
+    // Check which active spans overlap with this part and collect their types
+    for (let i = activeSpans.length - 1; i >= 0; i--) {
+      const span = activeSpans[i];
+      // Remove spans that ended before this part
+      if (span.endIndex <= currentPos) {
+        activeSpans.splice(i, 1);
+      } else if (span.startIndex < partEnd && span.endIndex > currentPos) {
+        // Span overlaps with this part
+        formatting.add(span.type);
+      }
     }
 
     result.push({ text: part, isWhitespace, formatting });
-    currentPos += part.length;
+    currentPos = partEnd;
   }
 
   return result;

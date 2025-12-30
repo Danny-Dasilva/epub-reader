@@ -163,6 +163,22 @@ export class StreamingAudioWorklet {
     this.isPaused = false;
   }
 
+  /**
+   * Performance optimization #10: Pre-allocate buffer based on estimated duration
+   * Call this before streaming to reduce dynamic reallocations
+   * @param estimatedDurationMs Expected audio duration in milliseconds
+   * @param sampleRate Audio sample rate (default 44100)
+   */
+  preallocateBuffer(estimatedDurationMs: number, sampleRate = 44100): void {
+    if (!this.workletNode) return;
+
+    const estimatedSamples = Math.ceil((estimatedDurationMs / 1000) * sampleRate);
+    this.workletNode.port.postMessage({
+      type: 'preallocate',
+      estimatedSamples
+    });
+  }
+
   pause(): void {
     if (!this.workletNode) return;
     this.workletNode.port.postMessage({ type: 'pause' });
