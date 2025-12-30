@@ -41,6 +41,7 @@ export class AudioPlayer {
   private isStreamingMode: boolean = false;
   private streamingStartTime: number = 0;
   private streamingSessionId: number = 0;  // Guard against stale ended events
+  private streamingSamplesConsumed: number = 0;  // Track samples for accurate word timing
 
   constructor() {
     // AudioContext will be created on first user interaction
@@ -108,12 +109,17 @@ export class AudioPlayer {
   setPlaybackRate(rate: number): void {
     this.playbackRate = Math.max(0.5, Math.min(2.0, rate));
 
-    // Update both players
+    // Update both HTML audio players
     if (this.playerA) {
       this.playerA.playbackRate = this.playbackRate;
     }
     if (this.playerB) {
       this.playerB.playbackRate = this.playbackRate;
+    }
+
+    // Update streaming worklet if active
+    if (this.streamingWorklet) {
+      this.streamingWorklet.setPlaybackRate(this.playbackRate);
     }
   }
 
@@ -404,10 +410,10 @@ export class AudioPlayer {
       let currentTime: number;
 
       if (this.isStreamingMode) {
-        // For streaming: compute elapsed time from AudioContext
-        const contextTime = this.audioContext?.currentTime ?? 0;
-        currentTime = contextTime - this.streamingStartTime;
-        // Note: playbackRate doesn't apply to streaming worklet yet
+        // For streaming: compute elapsed time from samples consumed
+        // This properly accounts for playback rate changes
+        const sampleRate = this.audioContext?.sampleRate ?? 44100;
+        currentTime = this.streamingSamplesConsumed / sampleRate;
       } else {
         // For non-streaming: use HTMLAudioElement currentTime
         const player = this.getActivePlayer();
@@ -640,6 +646,9 @@ export class AudioPlayer {
       this.streamingWorklet.reset();
     }
 
+    // Reset samples consumed for new sentence
+    this.streamingSamplesConsumed = 0;
+
     // Set up callbacks with session guard to ignore stale events
     this.streamingWorklet.setCallbacks({
       onStarted: () => {
@@ -660,7 +669,7 @@ export class AudioPlayer {
         // Start word highlighting
         this.startWordTracking();
       },
-      onEnded: () => {
+      onEnded: (samplesConsumed?: number) => {
         // CRITICAL: Ignore if this callback is from a stale session
         // This prevents race conditions where old 'ended' messages trigger
         // sentenceEnd for a newly started sentence
@@ -671,8 +680,9 @@ export class AudioPlayer {
         this.stopWordTracking();
         this.isPlaying = false;
         this.isStreamingMode = false;
-        // Calculate actual duration from elapsed time
-        const duration = (this.audioContext?.currentTime ?? 0) - this.streamingStartTime;
+        // Calculate actual duration from samples consumed (accounts for playback rate)
+        const sampleRate = this.audioContext?.sampleRate ?? 44100;
+        const duration = (samplesConsumed ?? this.streamingSamplesConsumed) / sampleRate;
         this.emit({
           type: 'sentenceEnd',
           sentenceId: sentence.sentenceId,
@@ -681,10 +691,16 @@ export class AudioPlayer {
         // DON'T emit 'stop' - let sentenceEnd handler decide whether to advance
         // This allows automatic sentence transitions like non-streaming modes
       },
-      onProgress: (progress) => {
-        // Could emit progress events here if needed
+      onProgress: (progress, samplesConsumed?: number) => {
+        // Update samples consumed for word tracking
+        if (samplesConsumed !== undefined) {
+          this.streamingSamplesConsumed = samplesConsumed;
+        }
       }
     });
+
+    // Apply current playback rate to streaming worklet
+    this.streamingWorklet.setPlaybackRate(this.playbackRate);
 
     // Connect to output
     if (this.audioContext) {

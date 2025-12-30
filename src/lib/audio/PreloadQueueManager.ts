@@ -67,8 +67,9 @@ export class PreloadQueueManager {
   // Blob URL tracking for memory leak prevention
   private blobUrls: Map<string, string> = new Map();
 
-  // LRU cache tracking - most recently used at end
-  private accessOrder: string[] = [];
+  // LRU cache tracking - Map of sentenceId -> access timestamp for O(1) operations
+  // Fix #4: Using Map instead of array for O(1) access tracking vs O(n²)
+  private accessOrder: Map<string, number> = new Map();
 
   // ASR refinement for accurate word timestamps
   private asrQueue: string[] = [];              // Sentence IDs pending ASR
@@ -587,20 +588,22 @@ export class PreloadQueueManager {
       }
     }
 
-    while (this.cache.size >= this.config.maxCacheSize && this.accessOrder.length > 0) {
-      // Find oldest entry that is NOT protected
-      let evictIndex = -1;
-      for (let i = 0; i < this.accessOrder.length; i++) {
-        if (!protectedIds.has(this.accessOrder[i])) {
-          evictIndex = i;
-          break;
+    while (this.cache.size >= this.config.maxCacheSize && this.accessOrder.size > 0) {
+      // Find oldest entry that is NOT protected - O(n) but only runs during eviction
+      let toEvict: string | null = null;
+      let oldestTime = Infinity;
+
+      for (const [sentenceId, accessTime] of this.accessOrder) {
+        if (!protectedIds.has(sentenceId) && accessTime < oldestTime) {
+          oldestTime = accessTime;
+          toEvict = sentenceId;
         }
       }
 
       // If all entries are protected, allow cache to grow temporarily
-      if (evictIndex === -1) break;
+      if (toEvict === null) break;
 
-      const toEvict = this.accessOrder.splice(evictIndex, 1)[0];
+      this.accessOrder.delete(toEvict);
       this.revokeBlob(toEvict);
       this.cache.delete(toEvict);
       // Don't change state on eviction - keeps visual state as 'ready'
@@ -609,14 +612,11 @@ export class PreloadQueueManager {
   }
 
   /**
-   * Track access for LRU eviction - move to end (most recently used)
+   * Track access for LRU eviction - O(1) operation using Map
+   * Fix #4: Replaced O(n²) indexOf+splice with O(1) Map.set()
    */
   private touchAccess(sentenceId: string): void {
-    const index = this.accessOrder.indexOf(sentenceId);
-    if (index > -1) {
-      this.accessOrder.splice(index, 1);
-    }
-    this.accessOrder.push(sentenceId);
+    this.accessOrder.set(sentenceId, Date.now());
   }
 
   /**
@@ -1053,7 +1053,7 @@ export class PreloadQueueManager {
   clearCache(): void {
     this.revokeAllBlobs();
     this.cache.clear();
-    this.accessOrder = [];
+    this.accessOrder.clear();
   }
 
   /**
@@ -1064,10 +1064,7 @@ export class PreloadQueueManager {
       if (predicate(id)) {
         this.revokeBlob(id);
         this.cache.delete(id);
-        const index = this.accessOrder.indexOf(id);
-        if (index > -1) {
-          this.accessOrder.splice(index, 1);
-        }
+        this.accessOrder.delete(id);
       }
     }
   }
@@ -1363,7 +1360,7 @@ export class PreloadQueueManager {
     this.clearASRQueue();
     this.revokeAllBlobs();
     this.cache.clear();
-    this.accessOrder = [];
+    this.accessOrder.clear();
     this.stateCallback = null;
     this.asrCompleteCallback = null;
     this.currentPlayingIndex = -1;

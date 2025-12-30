@@ -59,6 +59,8 @@ export default function ReaderPage() {
   const bookId = params.bookId as string;
   const contentRef = useRef<HTMLDivElement>(null);
   const mainRef = useRef<HTMLElement>(null);
+  // Fix #8: Track pending sentence navigation after chapter change
+  const pendingNavigationRef = useRef<{ sentenceIndex: number } | null>(null);
 
   const [book, setBook] = useState<ParsedBook | null>(null);
   const [pagination, setPagination] = useState<PaginationData | null>(null);
@@ -482,21 +484,31 @@ export default function ReaderPage() {
   }, [currentChapter, currentSentenceIndex, skipToSentence]);
 
   // Handle search result click - navigate to chapter and sentence
+  // Fix #8: Use ref-based pending navigation instead of unreliable timeout
   const handleSearchResultClick = useCallback((chapterIndex: number, sentenceIndex: number) => {
     // If different chapter, change to it first
     if (chapterIndex !== currentChapterIndex) {
+      // Store pending navigation for after chapter loads
+      pendingNavigationRef.current = { sentenceIndex };
       handleChapterChange(chapterIndex);
-      // Need to wait for chapter change, then set sentence
-      // For now, just go to the chapter - sentence navigation happens via skipToSentence
-      setTimeout(() => {
-        skipToSentence(sentenceIndex);
-      }, 100);
     } else {
       skipToSentence(sentenceIndex);
     }
     setShowSearch(false);
     clearSearch();
   }, [currentChapterIndex, handleChapterChange, skipToSentence, clearSearch]);
+
+  // Fix #8: Execute pending navigation when chapter changes
+  useEffect(() => {
+    if (currentChapter && pendingNavigationRef.current) {
+      const { sentenceIndex } = pendingNavigationRef.current;
+      pendingNavigationRef.current = null;
+      // Verify sentence index is valid for new chapter
+      if (sentenceIndex >= 0 && sentenceIndex < currentChapter.sentences.length) {
+        skipToSentence(sentenceIndex);
+      }
+    }
+  }, [currentChapter, skipToSentence]);
 
   // Chapter navigation availability
   const canGoPrevChapter = book ? currentChapterIndex > 0 : false;

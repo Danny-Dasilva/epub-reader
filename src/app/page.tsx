@@ -32,12 +32,25 @@ const TrashIcon = () => (
   </svg>
 );
 
+// Loading spinner component
+const LoadingSpinner = () => (
+  <div className="w-6 h-6 border-2 border-current border-t-transparent rounded-full animate-spin" />
+);
+
+// Fix #10: Error type with recovery options
+interface ParseError {
+  message: string;
+  details?: string;
+  canRetry: boolean;
+}
+
 export default function LibraryPage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [isLibraryLoading, setIsLibraryLoading] = useState(true); // Fix #7: Loading state for IndexedDB
+  const [error, setError] = useState<ParseError | null>(null);
 
   const { books, addBook, removeBook, loadBooksFromDB, addBookToDB } = useLibraryStore();
   const enableIndexedDBStorage = usePlaybackStore(state => state.enableIndexedDBStorage);
@@ -46,12 +59,19 @@ export default function LibraryPage() {
   // Load books from IndexedDB on mount
   useEffect(() => {
     const initStorage = async () => {
-      if (enableIndexedDBStorage) {
-        // Run migration from sessionStorage
-        await migrateFromSessionStorage();
+      setIsLibraryLoading(true);
+      try {
+        if (enableIndexedDBStorage) {
+          // Run migration from sessionStorage
+          await migrateFromSessionStorage();
 
-        // Load books from IndexedDB
-        await loadBooksFromDB();
+          // Load books from IndexedDB
+          await loadBooksFromDB();
+        }
+      } catch (err) {
+        console.error('Failed to load library:', err);
+      } finally {
+        setIsLibraryLoading(false);
       }
     };
 
@@ -60,7 +80,11 @@ export default function LibraryPage() {
 
   const handleFileSelect = useCallback(async (file: File) => {
     if (!file.name.endsWith('.epub')) {
-      setError('Please select an EPUB file');
+      setError({
+        message: 'Invalid file type',
+        details: 'Please select a valid EPUB file (.epub extension)',
+        canRetry: true
+      });
       return;
     }
 
@@ -84,7 +108,12 @@ export default function LibraryPage() {
       router.push(`/reader/${parsedBook.id}`);
     } catch (err) {
       console.error('Failed to parse EPUB:', err);
-      setError('Failed to parse EPUB file. Please try another file.');
+      // Fix #10: Detailed error with recovery options
+      setError({
+        message: 'Failed to parse EPUB file',
+        details: err instanceof Error ? err.message : 'The file may be corrupted or in an unsupported format',
+        canRetry: true
+      });
     } finally {
       setIsLoading(false);
     }
@@ -209,10 +238,46 @@ export default function LibraryPage() {
             </div>
           </div>
 
+          {/* Fix #10: Enhanced error UI with recovery options */}
           {error && (
-            <p className="mt-4 text-center text-red-600 text-sm">
-              {error}
-            </p>
+            <div className="mt-4 mx-auto max-w-md bg-red-50 border border-red-200 rounded-lg p-4 animate-fade-in">
+              <div className="flex items-start gap-3">
+                <div className="flex-shrink-0 w-5 h-5 text-red-500 mt-0.5">
+                  <svg viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                  </svg>
+                </div>
+                <div className="flex-1">
+                  <h4 className="font-medium text-red-800 text-sm">
+                    {error.message}
+                  </h4>
+                  {error.details && (
+                    <p className="text-sm text-red-600 mt-1">
+                      {error.details}
+                    </p>
+                  )}
+                  <div className="mt-3 flex gap-2">
+                    {error.canRetry && (
+                      <button
+                        onClick={() => {
+                          setError(null);
+                          fileInputRef.current?.click();
+                        }}
+                        className="px-3 py-1.5 text-sm font-medium text-red-700 bg-red-100 rounded-md hover:bg-red-200 transition-colors"
+                      >
+                        Try Again
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setError(null)}
+                      className="px-3 py-1.5 text-sm font-medium text-red-600 hover:text-red-800 transition-colors"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
           )}
         </section>
 
@@ -286,8 +351,23 @@ export default function LibraryPage() {
           </section>
         )}
 
+        {/* Loading State (Fix #7) */}
+        {isLibraryLoading && books.length === 0 && (
+          <section className="text-center py-16 animate-fade-in">
+            <div className="inline-flex items-center justify-center w-20 h-20 rounded-full bg-[var(--color-paper-dark)] mb-6 text-[var(--color-ink-muted)]">
+              <LoadingSpinner />
+            </div>
+            <h3 className="text-xl font-serif text-[var(--color-ink)] mb-2">
+              Loading your library...
+            </h3>
+            <p className="text-[var(--color-ink-muted)] max-w-md mx-auto">
+              Please wait while we load your books from storage.
+            </p>
+          </section>
+        )}
+
         {/* Empty State */}
-        {books.length === 0 && (
+        {!isLibraryLoading && books.length === 0 && (
           <section className="text-center py-16 animate-fade-in animate-fade-in-delay-3">
             <div className="inline-flex items-center justify-center w-20 h-20 rounded-full bg-[var(--color-paper-dark)] mb-6">
               <BookIcon />

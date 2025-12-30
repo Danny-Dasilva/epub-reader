@@ -35,7 +35,17 @@ let currentHighlight: Highlight = {
   timestampSource: null
 };
 
-const highlightListeners = new Set<HighlightListener>();
+// Fix #6: Use Map with ID-based tracking for reliable cleanup
+// Auto-cleanup stale listeners after 5 minutes to prevent memory leaks
+interface ListenerEntry {
+  listener: HighlightListener;
+  timeout: ReturnType<typeof setTimeout>;
+}
+
+const highlightListeners = new Map<string, ListenerEntry>();
+let listenerIdCounter = 0;
+const LISTENER_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_LISTENERS = 1000; // Safety limit
 
 /**
  * Set the current highlight state (non-reactive - no re-renders)
@@ -53,7 +63,7 @@ export const setHighlight = (
   };
 
   // Notify all subscribers (they can use RAF to batch updates)
-  highlightListeners.forEach(fn => fn(currentHighlight));
+  highlightListeners.forEach(entry => entry.listener(currentHighlight));
 };
 
 /**
@@ -67,10 +77,39 @@ export const getHighlight = (): Highlight => currentHighlight;
  *
  * Note: Subscribers are called synchronously on every highlight update.
  * For rendering, consider using requestAnimationFrame to batch updates.
+ *
+ * Fix #6: Listeners auto-cleanup after 5 minutes if not manually unsubscribed.
+ * This prevents memory leaks from components that fail to unsubscribe.
  */
 export const subscribeToHighlight = (listener: HighlightListener): (() => void) => {
-  highlightListeners.add(listener);
-  return () => highlightListeners.delete(listener);
+  // Safety check: prevent unbounded growth
+  if (highlightListeners.size >= MAX_LISTENERS) {
+    console.warn('[sentenceStateStore] Maximum highlight listeners reached, cleaning oldest');
+    // Remove oldest listener
+    const firstKey = highlightListeners.keys().next().value;
+    if (firstKey) {
+      const entry = highlightListeners.get(firstKey);
+      if (entry) clearTimeout(entry.timeout);
+      highlightListeners.delete(firstKey);
+    }
+  }
+
+  const id = `listener-${++listenerIdCounter}`;
+
+  // Auto-cleanup after timeout to prevent leaks from unmounted components
+  const timeout = setTimeout(() => {
+    highlightListeners.delete(id);
+  }, LISTENER_TIMEOUT_MS);
+
+  highlightListeners.set(id, { listener, timeout });
+
+  return () => {
+    const entry = highlightListeners.get(id);
+    if (entry) {
+      clearTimeout(entry.timeout);
+      highlightListeners.delete(id);
+    }
+  };
 };
 
 /**

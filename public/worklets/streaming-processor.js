@@ -9,11 +9,17 @@ class StreamingProcessor extends AudioWorkletProcessor {
     super();
 
     // Ring buffer for audio samples (10 second capacity)
-    this.buffer = new Float32Array(44100 * 10);
+    this.initialBufferSize = 44100 * 10;
+    this.buffer = new Float32Array(this.initialBufferSize);
     this.writePos = 0;
-    this.readPos = 0;
+    this.readPos = 0;  // Now a float for fractional positioning (playback rate)
     this.isStarted = false;
     this.isPaused = false;
+
+    // Playback rate support (1.0 = normal, 2.0 = double speed)
+    this.playbackRate = 1.0;
+    // Track samples consumed for accurate time reporting
+    this.samplesConsumed = 0;
 
     // Start playback after 500ms of audio is buffered
     this.startThreshold = 44100 * 0.5;
@@ -32,6 +38,8 @@ class StreamingProcessor extends AudioWorkletProcessor {
         this.isPaused = true;
       } else if (e.data.type === 'resume') {
         this.isPaused = false;
+      } else if (e.data.type === 'setPlaybackRate') {
+        this.playbackRate = Math.max(0.5, Math.min(2.0, e.data.rate));
       }
     };
   }
@@ -56,12 +64,18 @@ class StreamingProcessor extends AudioWorkletProcessor {
   }
 
   reset() {
+    // Compact buffer back to initial size if it grew (Fix #3: memory leak)
+    if (this.buffer.length > this.initialBufferSize) {
+      this.buffer = new Float32Array(this.initialBufferSize);
+    }
     this.writePos = 0;
     this.readPos = 0;
+    this.samplesConsumed = 0;
     this.isStarted = false;
     this.isComplete = false;
     this.hasEnded = false;  // Reset the ended guard for new sentence
     this.isPaused = false;
+    // Note: playbackRate is intentionally preserved across resets
   }
 
   process(inputs, outputs) {
@@ -77,10 +91,25 @@ class StreamingProcessor extends AudioWorkletProcessor {
       return true;
     }
 
-    // Stream audio from buffer
+    // Stream audio from buffer with playback rate support using linear interpolation
     for (let i = 0; i < output.length; i++) {
-      if (this.readPos < this.writePos) {
-        output[i] = this.buffer[this.readPos++];
+      const intPos = Math.floor(this.readPos);
+
+      if (intPos + 1 < this.writePos) {
+        // Linear interpolation between samples for smooth playback rate changes
+        const frac = this.readPos - intPos;
+        const sample1 = this.buffer[intPos];
+        const sample2 = this.buffer[intPos + 1];
+        output[i] = sample1 + frac * (sample2 - sample1);
+
+        // Advance read position by playback rate
+        this.readPos += this.playbackRate;
+        this.samplesConsumed++;
+      } else if (intPos < this.writePos) {
+        // Last sample - no interpolation needed
+        output[i] = this.buffer[intPos];
+        this.readPos += this.playbackRate;
+        this.samplesConsumed++;
       } else {
         // Buffer underrun - fill with silence
         output[i] = 0;
@@ -89,17 +118,22 @@ class StreamingProcessor extends AudioWorkletProcessor {
 
     // Report progress and completion (only when not paused)
     // CRITICAL: Only send 'ended' ONCE to prevent duplicate sentenceEnd events
-    if (this.isComplete && this.readPos >= this.writePos && !this.hasEnded) {
+    const intReadPos = Math.floor(this.readPos);
+    if (this.isComplete && intReadPos >= this.writePos && !this.hasEnded) {
       this.hasEnded = true;
-      this.port.postMessage({ type: 'ended' });
+      this.port.postMessage({
+        type: 'ended',
+        samplesConsumed: this.samplesConsumed
+      });
     } else if (!this.hasEnded) {
       // Only send progress while still playing (not after ended)
-      const progress = this.writePos > 0 ? this.readPos / this.writePos : 0;
+      const progress = this.writePos > 0 ? intReadPos / this.writePos : 0;
       this.port.postMessage({
         type: 'progress',
         progress,
-        readPos: this.readPos,
-        writePos: this.writePos
+        readPos: intReadPos,
+        writePos: this.writePos,
+        samplesConsumed: this.samplesConsumed
       });
     }
 
