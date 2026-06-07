@@ -14,20 +14,54 @@ interface SearchPanelProps {
   onResultClick: (chapterIndex: number, sentenceIndex: number) => void;
 }
 
-// Icons
-const SearchIcon = () => (
+// rendering-hoist-jsx: Hoisted static SVG icons outside components to avoid
+// re-creation on every render.
+const searchIcon = (
   <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <circle cx="11" cy="11" r="8" />
     <line x1="21" y1="21" x2="16.65" y2="16.65" />
   </svg>
 );
 
-const CloseIcon = () => (
+const closeIcon = (
   <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <line x1="18" y1="6" x2="6" y2="18" />
     <line x1="6" y1="6" x2="18" y2="18" />
   </svg>
 );
+
+// rerender-memo: Memoized result row so individual results don't re-render
+// when other results or panel state changes.
+const SearchResultItem = memo(function SearchResultItem({
+  result,
+  index,
+  onResultClick,
+}: {
+  result: SearchResult;
+  index: number;
+  onResultClick: (result: SearchResult) => void;
+}) {
+  const context = getMatchContext(result.text, result.matchStart, result.matchEnd);
+  return (
+    <button
+      key={`${result.sentenceId}-${result.matchStart}-${index}`}
+      className="search-result"
+      onClick={() => onResultClick(result)}
+    >
+      <span className="search-result-chapter">{result.chapterTitle}</span>
+      {result.pageNumber > 0 ? (
+        <span className="search-result-location">
+          Chapter {result.chapterIndex + 1}, Page {result.pageNumber}
+        </span>
+      ) : null}
+      <span className="search-result-text">
+        <span className="search-result-context">{context.prefix}</span>
+        <mark className="search-result-match">{context.match}</mark>
+        <span className="search-result-context">{context.suffix}</span>
+      </span>
+    </button>
+  );
+});
 
 /**
  * Search panel component for searching within a book.
@@ -69,38 +103,13 @@ export const SearchPanel = memo(function SearchPanel({
     onClose();
   }, [onResultClick, onClose]);
 
-  // Render a single result with highlighted match
-  const renderResult = (result: SearchResult, index: number) => {
-    const context = getMatchContext(result.text, result.matchStart, result.matchEnd);
-
-    return (
-      <button
-        key={`${result.sentenceId}-${result.matchStart}-${index}`}
-        className="search-result"
-        onClick={() => handleResultClick(result)}
-      >
-        <span className="search-result-chapter">{result.chapterTitle}</span>
-        {result.pageNumber > 0 ? (
-          <span className="search-result-location">
-            Chapter {result.chapterIndex + 1}, Page {result.pageNumber}
-          </span>
-        ) : null}
-        <span className="search-result-text">
-          <span className="search-result-context">{context.prefix}</span>
-          <mark className="search-result-match">{context.match}</mark>
-          <span className="search-result-context">{context.suffix}</span>
-        </span>
-      </button>
-    );
-  };
-
   if (!isOpen) return null;
 
   return (
     <div className="search-panel">
       {/* Search Input */}
       <div className="search-input-container">
-        <SearchIcon />
+        {searchIcon}
         <input
           ref={inputRef}
           type="text"
@@ -119,7 +128,7 @@ export const SearchPanel = memo(function SearchPanel({
             onClick={() => onQueryChange('')}
             title="Clear search"
           >
-            <CloseIcon />
+            {closeIcon}
           </button>
         ) : null}
         <button
@@ -127,7 +136,7 @@ export const SearchPanel = memo(function SearchPanel({
           onClick={onClose}
           title="Close search"
         >
-          <CloseIcon />
+          {closeIcon}
         </button>
       </div>
 
@@ -147,7 +156,14 @@ export const SearchPanel = memo(function SearchPanel({
                 : `Showing ${results.length} of ${totalMatches} matches`}
             </div>
             <div className="search-results-list">
-              {results.map((result, index) => renderResult(result, index))}
+              {results.map((result, index) => (
+                <SearchResultItem
+                  key={`${result.sentenceId}-${result.matchStart}-${index}`}
+                  result={result}
+                  index={index}
+                  onResultClick={handleResultClick}
+                />
+              ))}
             </div>
           </>
         ) : null}

@@ -36,16 +36,25 @@ export class UnicodeProcessor {
   }
 
   call(textList: string[]): { textIds: number[][]; textMask: number[][][] } {
-    const processedTexts = textList.map(text => this.preprocessText(text));
+    // js-combine-iterations: compute processedTexts and lengths in one pass
+    const processedTexts: string[] = new Array(textList.length);
+    const textIdsLengths: number[] = new Array(textList.length);
+    for (let i = 0; i < textList.length; i++) {
+      const p = this.preprocessText(textList[i]);
+      processedTexts[i] = p;
+      textIdsLengths[i] = p.length;
+    }
 
-    const textIdsLengths = processedTexts.map(text => text.length);
     const maxLen = Math.max(...textIdsLengths);
 
+    // js-cache-property-access: hoist indexer ref and length outside inner loops
     const indexer = this.indexer;
     const indexerLen = indexer.length;
     const textIds = processedTexts.map(text => {
       const row = new Array(maxLen).fill(0);
-      for (let j = 0; j < text.length; j++) {
+      // js-cache-property-access: cache text.length once per text
+      const textLen = text.length;
+      for (let j = 0; j < textLen; j++) {
         const codePoint = text.codePointAt(j);
         row[j] = codePoint !== undefined && codePoint < indexerLen
           ? indexer[codePoint]

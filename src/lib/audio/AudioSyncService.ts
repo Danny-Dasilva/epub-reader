@@ -33,6 +33,9 @@ export type SyncProgressCallback = (
   message: string
 ) => void;
 
+// js-hoist-regexp: module-level constant avoids recompiling the regex on every call
+const WHITESPACE_RE = /\s+/;
+
 export class AudioSyncService {
   private ttsManager: TTSWorkerManager;
   private preloadManager: PreloadQueueManager;
@@ -649,7 +652,7 @@ export class AudioSyncService {
    * Uses character-weighted estimation similar to PreloadQueueManager
    */
   private generateEstimatedTimestamps(text: string, speed: number): WordTimestamp[] {
-    const words = text.split(/\s+/).filter(w => w.length > 0);
+    const words = text.split(WHITESPACE_RE).filter(w => w.length > 0);
     if (words.length === 0) return [];
 
     const totalChars = words.reduce((sum, w) => sum + w.length, 0);

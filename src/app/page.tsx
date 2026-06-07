@@ -15,15 +15,15 @@ const ContinueReadingCard = dynamic(
   { ssr: false }
 );
 
-// Icons as inline SVGs
-const BookIcon = () => (
+// Icons as static JSX constants — hoisted to avoid re-creation on every render (rule 6.3)
+const bookIcon = (
   <svg className="icon w-6 h-6" viewBox="0 0 24 24">
     <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
     <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
   </svg>
 );
 
-const UploadIcon = () => (
+const uploadIcon = (
   <svg className="icon w-8 h-8" viewBox="0 0 24 24">
     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
     <polyline points="17 8 12 3 7 8" />
@@ -31,15 +31,15 @@ const UploadIcon = () => (
   </svg>
 );
 
-const TrashIcon = () => (
+const trashIcon = (
   <svg className="icon w-4 h-4" viewBox="0 0 24 24">
     <polyline points="3 6 5 6 21 6" />
     <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
   </svg>
 );
 
-// Loading spinner component
-const LoadingSpinner = () => (
+// Loading spinner — not hoisted because it renders inline (not static per se, but component is trivial)
+const loadingSpinner = (
   <div className="w-6 h-6 border-2 border-current border-t-transparent rounded-full animate-spin" />
 );
 
@@ -180,7 +180,7 @@ export default function LibraryPage() {
         <div className="max-w-6xl mx-auto px-6 py-6">
           <div className="flex items-center gap-3 animate-fade-in">
             <div className="w-10 h-10 rounded-lg bg-[var(--color-ink)] text-[var(--color-paper)] flex items-center justify-center">
-              <BookIcon />
+              {bookIcon}
             </div>
             <div>
               <h1 className="text-2xl font-serif font-semibold tracking-tight text-[var(--color-ink)]">
@@ -231,9 +231,9 @@ export default function LibraryPage() {
                 ${isDragging ? 'scale-110 bg-[var(--color-gold-light)] text-[var(--color-ink)]' : ''}
               `}>
                 {isLoading ? (
-                  <LoadingSpinner />
+                  loadingSpinner
                 ) : (
-                  <UploadIcon />
+                  uploadIcon
                 )}
               </div>
 
@@ -292,7 +292,7 @@ export default function LibraryPage() {
         </section>
 
         {/* Library Grid */}
-        {books.length > 0 && (
+        {books.length > 0 ? (
           <section className="animate-fade-in animate-fade-in-delay-2">
             <h2 className="text-sm font-medium uppercase tracking-wider text-[var(--color-ink-muted)] mb-6">
               Your Library
@@ -300,7 +300,7 @@ export default function LibraryPage() {
 
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6">
               {books
-                .sort((a, b) => b.lastReadAt - a.lastReadAt)
+                .toSorted((a, b) => b.lastReadAt - a.lastReadAt)
                 .map((book, index) => (
                   <div
                     key={book.id}
@@ -342,7 +342,7 @@ export default function LibraryPage() {
                                    flex items-center justify-center hover:bg-red-600"
                         title="Remove from library"
                       >
-                        <TrashIcon />
+                        {trashIcon}
                       </button>
                     </div>
 
@@ -359,13 +359,13 @@ export default function LibraryPage() {
                 ))}
             </div>
           </section>
-        )}
+        ) : null}
 
         {/* Loading State (Fix #7) */}
         {isLibraryLoading && books.length === 0 && (
           <section className="text-center py-16 animate-fade-in">
             <div className="inline-flex items-center justify-center w-20 h-20 rounded-full bg-[var(--color-paper-dark)] mb-6 text-[var(--color-ink-muted)]">
-              <LoadingSpinner />
+              {loadingSpinner}
             </div>
             <h3 className="text-xl font-serif text-[var(--color-ink)] mb-2">
               Loading your library...
@@ -380,7 +380,7 @@ export default function LibraryPage() {
         {!isLibraryLoading && books.length === 0 && (
           <section className="text-center py-16 animate-fade-in animate-fade-in-delay-3">
             <div className="inline-flex items-center justify-center w-20 h-20 rounded-full bg-[var(--color-paper-dark)] mb-6">
-              <BookIcon />
+              {bookIcon}
             </div>
             <h3 className="text-xl font-serif text-[var(--color-ink)] mb-2">
               Your library is empty

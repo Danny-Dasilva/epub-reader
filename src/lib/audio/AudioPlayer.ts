@@ -466,7 +466,10 @@ export class AudioPlayer {
     this.stopWordTracking();
 
     const track = () => {
-      if (!this.isPlaying || !this.currentSentence) {
+      // js-cache-property-access: hoist repeated this.* reads into locals for the RAF hot path
+      const isPlaying = this.isPlaying;
+      const sentence = this.currentSentence;
+      if (!isPlaying || !sentence) {
         return;
       }
 
@@ -489,10 +492,14 @@ export class AudioPlayer {
 
         // Performance optimization #3: Consolidated sentence-end detection
         // Check if we're near the end and should trigger next player
-        if (!this.nextStartTriggered && this.nextSentenceQueued && player.duration) {
+        // js-cache-property-access: cache this.nextStartTriggered / this.nextSentenceQueued / this.playbackRate
+        const nextStartTriggered = this.nextStartTriggered;
+        const nextSentenceQueued = this.nextSentenceQueued;
+        const playbackRate = this.playbackRate;
+        if (!nextStartTriggered && nextSentenceQueued && player.duration) {
           const timeRemaining = player.duration - currentTime;
           // Trigger when ~150ms remaining (adjusted for playback rate)
-          if (timeRemaining < 0.15 / this.playbackRate) {
+          if (timeRemaining < 0.15 / playbackRate) {
             this.nextStartTriggered = true;
             this.startNextPlayer();
           }
@@ -506,10 +513,10 @@ export class AudioPlayer {
         this.lastWordIndex = wordIndex;
         this.emit({
           type: 'wordChange',
-          sentenceId: this.currentSentence.sentenceId,
+          sentenceId: sentence.sentenceId,
           wordIndex: wordIndex >= 0 ? wordIndex : undefined,
           currentTime,
-          timestampSource: this.currentSentence.timestampSource
+          timestampSource: sentence.timestampSource
         });
       }
 
@@ -525,13 +532,15 @@ export class AudioPlayer {
    * between estimated timestamps
    */
   private findCurrentWordIndexWithInterpolation(currentTime: number): number {
-    if (!this.currentSentence?.wordTimestamps) return -1;
+    // js-cache-property-access: cache this.currentSentence once to avoid repeated field reads
+    const sentence = this.currentSentence;
+    if (!sentence?.wordTimestamps) return -1;
 
-    const words = this.currentSentence.wordTimestamps;
+    const words = sentence.wordTimestamps;
     if (words.length === 0) return -1;
 
     // If using ASR timestamps (high confidence), use standard binary search
-    if (this.currentSentence.timestampSource === 'asr') {
+    if (sentence.timestampSource === 'asr') {
       return this.findCurrentWordIndex(currentTime);
     }
 
@@ -568,9 +577,9 @@ export class AudioPlayer {
   }
 
   private findCurrentWordIndex(currentTime: number): number {
-    if (!this.currentSentence?.wordTimestamps) return -1;
-
-    const words = this.currentSentence.wordTimestamps;
+    // js-cache-property-access: cache this.currentSentence once
+    const words = this.currentSentence?.wordTimestamps;
+    if (!words) return -1;
     if (words.length === 0) return -1;
 
     if (currentTime >= words[words.length - 1].end) {

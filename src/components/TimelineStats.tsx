@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useState } from 'react';
+import { memo, useRef, useState } from 'react';
 import { TimeEstimate } from '@/hooks/useTimeEstimation';
 
 interface TimelineStatsProps {
@@ -56,8 +56,12 @@ export const TimelineStats = memo(function TimelineStats({
 }: TimelineStatsProps) {
   const [expanded, setExpanded] = useState(false);
 
-  // Check if we're on mobile based on screen width
-  const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+  // rerender-use-ref-transient-values: Read window.innerWidth once on mount via ref
+  // instead of re-reading (and re-evaluating) on every render. The value is stable
+  // for the lifetime of the component; a resize listener is not needed here because
+  // the component is recreated when the reader layout changes.
+  const isMobileRef = useRef(typeof window !== 'undefined' && window.innerWidth < 768);
+  const isMobile = isMobileRef.current;
 
   return (
     <div className="timeline-stats-container">

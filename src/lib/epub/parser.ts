@@ -10,7 +10,8 @@ function generateBookId(title: string, author: string): string {
   const combined = `${title}-${author}`.toLowerCase();
   // Simple hash function
   let hash = 0;
-  for (let i = 0; i < combined.length; i++) {
+  const len = combined.length; // js-cache-property-access: cache .length outside loop
+  for (let i = 0; i < len; i++) {
     const char = combined.charCodeAt(i);
     hash = ((hash << 5) - hash) + char;
     hash = hash & hash;
@@ -250,17 +251,18 @@ export function getReadingProgress(
   chapterIndex: number,
   sentenceIndex: number
 ): number {
+  // js-combine-iterations: single pass accumulates both totals simultaneously
   let totalSentences = 0;
   let completedSentences = 0;
 
   for (let i = 0; i < book.chapters.length; i++) {
-    const chapter = book.chapters[i];
+    const len = book.chapters[i].sentences.length;
     if (i < chapterIndex) {
-      completedSentences += chapter.sentences.length;
+      completedSentences += len;
     } else if (i === chapterIndex) {
       completedSentences += sentenceIndex;
     }
-    totalSentences += chapter.sentences.length;
+    totalSentences += len;
   }
 
   return totalSentences > 0 ? (completedSentences / totalSentences) * 100 : 0;

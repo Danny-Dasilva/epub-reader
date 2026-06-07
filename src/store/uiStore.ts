@@ -40,10 +40,10 @@ export const useUIStore = create<UIState & UIActions>()(
       setFontSize: (fontSize) => set({ fontSize }),
       setShowToc: (showToc) => set({ showToc }),
       setShowSettings: (showSettings) => set({ showSettings }),
-      toggleSettings: () => set({ showSettings: !get().showSettings }),
+      toggleSettings: () => set((state) => ({ showSettings: !state.showSettings })),
       setAutoScroll: (autoScroll) => set({ autoScroll }),
       setScrollPosition: (scrollPosition) => set({ scrollPosition }),
-      toggleAutoScroll: () => set({ autoScroll: !get().autoScroll })
+      toggleAutoScroll: () => set((state) => ({ autoScroll: !state.autoScroll }))
     }),
     {
       name: 'epub-reader-ui',

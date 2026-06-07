@@ -99,11 +99,13 @@ export function resampleAudio(
   const ratio = fromSampleRate / toSampleRate;
   const newLength = Math.floor(audioData.length / ratio);
   const result = new Float32Array(newLength);
+  // js-cache-property-access: hoist audioData.length - 1 outside the hot loop
+  const lastSrcIndex = audioData.length - 1;
 
   for (let i = 0; i < newLength; i++) {
     const srcIndex = i * ratio;
     const srcIndexFloor = Math.floor(srcIndex);
-    const srcIndexCeil = Math.min(srcIndexFloor + 1, audioData.length - 1);
+    const srcIndexCeil = Math.min(srcIndexFloor + 1, lastSrcIndex);
     const fraction = srcIndex - srcIndexFloor;
 
     // Linear interpolation

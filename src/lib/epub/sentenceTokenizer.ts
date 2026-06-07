@@ -87,11 +87,13 @@ function splitAtBreakPoints(text: string, maxLength: number): string[] {
   let remaining = text;
 
   while (remaining.length > maxLength) {
+    // js-cache-property-access: cache remaining.length, accessed multiple times per iteration
+    const remLen = remaining.length;
     // Find the best split point within maxLength
     let splitIndex = -1;
 
     // Look for comma, semicolon, or dash
-    for (let i = Math.min(maxLength, remaining.length) - 1; i >= maxLength / 2; i--) {
+    for (let i = Math.min(maxLength, remLen) - 1; i >= maxLength / 2; i--) {
       const char = remaining[i];
       if (char === ',' || char === ';' || char === '-' || char === ':') {
         splitIndex = i + 1;
@@ -101,7 +103,7 @@ function splitAtBreakPoints(text: string, maxLength: number): string[] {
 
     // If no good split point, split at space
     if (splitIndex === -1) {
-      for (let i = Math.min(maxLength, remaining.length) - 1; i >= maxLength / 2; i--) {
+      for (let i = Math.min(maxLength, remLen) - 1; i >= maxLength / 2; i--) {
         if (remaining[i] === ' ') {
           splitIndex = i + 1;
           break;

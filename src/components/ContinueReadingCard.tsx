@@ -1,5 +1,6 @@
 'use client';
 
+import { memo } from 'react';
 import { useRouter } from 'next/navigation';
 import { BookWithProgress } from '@/hooks/useLastReadBook';
 
@@ -25,20 +26,20 @@ function formatRelativeTime(timestamp: number): string {
   return `${Math.floor(days / 30)} ${Math.floor(days / 30) === 1 ? 'month' : 'months'} ago`;
 }
 
-// Icons
-const BookmarkIcon = () => (
+// Static icon JSX constants — hoisted to avoid re-creation on every render (rule 6.3)
+const bookmarkIcon = (
   <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
   </svg>
 );
 
-const PlayIcon = () => (
+const playIcon = (
   <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <polygon points="5 3 19 12 5 21 5 3" />
   </svg>
 );
 
-const InfoIcon = () => (
+const infoIcon = (
   <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <circle cx="12" cy="12" r="10" />
     <line x1="12" y1="16" x2="12" y2="12" />
@@ -46,7 +47,7 @@ const InfoIcon = () => (
   </svg>
 );
 
-export function ContinueReadingCard({ book }: ContinueReadingCardProps) {
+export const ContinueReadingCard = memo(function ContinueReadingCard({ book }: ContinueReadingCardProps) {
   const router = useRouter();
 
   const handleResume = () => {
@@ -81,7 +82,7 @@ export function ContinueReadingCard({ book }: ContinueReadingCardProps) {
             />
           ) : (
             <div className="w-full h-full flex items-center justify-center p-3 bg-gradient-to-br from-[var(--color-paper-dark)] to-[var(--color-sepia)]">
-              <BookmarkIcon />
+              {bookmarkIcon}
             </div>
           )}
         </div>
@@ -90,7 +91,7 @@ export function ContinueReadingCard({ book }: ContinueReadingCardProps) {
         <div className="continue-reading-info">
           <div className="flex items-start gap-2 mb-2">
             <div className="w-8 h-8 rounded-full bg-[var(--color-gold-light)] text-[var(--color-ink)] flex items-center justify-center flex-shrink-0">
-              <BookmarkIcon />
+              {bookmarkIcon}
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-xs uppercase tracking-wider text-[var(--color-ink-muted)] mb-1">
@@ -131,7 +132,7 @@ export function ContinueReadingCard({ book }: ContinueReadingCardProps) {
               className="continue-reading-btn-resume flex-1"
               title="Resume reading with audio playback"
             >
-              <PlayIcon />
+              {playIcon}
               <span>Resume</span>
             </button>
             <button
@@ -139,11 +140,11 @@ export function ContinueReadingCard({ book }: ContinueReadingCardProps) {
               className="continue-reading-btn-details"
               title="View book details"
             >
-              <InfoIcon />
+              {infoIcon}
             </button>
           </div>
         </div>
       </div>
     </div>
   );
-}
+});

@@ -55,23 +55,22 @@ export const useSleepTimerStore = create<SleepTimerState & SleepTimerActions>()(
       },
 
       tick: (deltaMs) => {
-        const { isActive, remainingMs, selectedPreset } = get();
+        set((state) => {
+          // Don't tick for chapter_end mode
+          if (!state.isActive || state.selectedPreset === 'chapter_end') return state;
 
-        // Don't tick for chapter_end mode
-        if (!isActive || selectedPreset === 'chapter_end') return;
+          const newRemaining = Math.max(0, state.remainingMs - deltaMs);
 
-        const newRemaining = Math.max(0, remainingMs - deltaMs);
-
-        if (newRemaining <= 0) {
-          // Timer expired - stop it
-          set({
-            isActive: false,
-            remainingMs: 0,
-            selectedPreset: null
-          });
-        } else {
-          set({ remainingMs: newRemaining });
-        }
+          if (newRemaining <= 0) {
+            // Timer expired - stop it
+            return {
+              isActive: false,
+              remainingMs: 0,
+              selectedPreset: null
+            };
+          }
+          return { remainingMs: newRemaining };
+        });
       },
 
       reset: () => {

@@ -40,6 +40,8 @@ export function searchBook(
   }
 
   const normalizedQuery = query.toLowerCase().trim();
+  // js-cache-property-access: cache query length used in tight inner loop
+  const queryLen = normalizedQuery.length;
 
   for (let chapterIndex = 0; chapterIndex < book.chapters.length; chapterIndex++) {
     const chapter = book.chapters[chapterIndex];
@@ -66,7 +68,7 @@ export function searchBook(
           sentenceId: sentence.id,
           text: sentence.text,
           matchStart,
-          matchEnd: matchStart + query.length,
+          matchEnd: matchStart + queryLen,
           pageNumber: pageInfo.pageNumber,
           totalPages: pageInfo.totalPages
         });

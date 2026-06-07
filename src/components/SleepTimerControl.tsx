@@ -21,7 +21,8 @@ const PRESET_OPTIONS: Array<{ value: SleepTimerPreset; label: string }> = [
   { value: 'chapter_end', label: 'Chapter' }
 ];
 
-const ClockIcon = () => (
+// rendering-hoist-jsx: Hoisted static SVG outside component to avoid re-creation each render.
+const clockIcon = (
   <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <circle cx="12" cy="12" r="10" />
     <polyline points="12 6 12 12 16 14" />
@@ -58,7 +59,7 @@ export const SleepTimerControl = memo(function SleepTimerControl({
           <div className="sleep-timer-active">
             <div className="sleep-timer-active-content">
               <div className="sleep-timer-icon">
-                <ClockIcon />
+                {clockIcon}
               </div>
               <div className="sleep-timer-info">
                 <div className="sleep-timer-label">Sleep Timer</div>

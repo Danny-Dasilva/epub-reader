@@ -177,7 +177,7 @@ export class BookStorage {
           lastReadAt: record.lastReadAt,
           progress: record.metadata.progress
         };
-      }).sort((a, b) => b.lastReadAt - a.lastReadAt);
+      }).toSorted((a, b) => b.lastReadAt - a.lastReadAt);
     } catch (err) {
       console.error('Failed to list books:', err);
       return [];

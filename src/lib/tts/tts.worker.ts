@@ -198,6 +198,10 @@ const SHORT_WORDS = new Set([
   'so', 'no', 'not', 'up', 'as', 'for', 'its', 'his', 'her', 'our',
 ]);
 
+// js-set-map-lookups: O(1) Set lookups instead of String.prototype.includes per word
+const SENTENCE_END_CHARS = new Set(['.', '!', '?']);
+const PAUSE_CHARS = new Set([',', ';', ':']);
+
 const NON_ALPHA_PATTERN = /[^a-zA-Z]/g;
 const VOWEL_CLUSTERS_PATTERN = /[aeiouy]+/gi;
 const VOWELS_PATTERN = /[aeiouy]/gi;
@@ -236,12 +240,20 @@ function heuristicWordTiming(
   const words = text.split(WORD_SPLIT_PATTERN).filter(w => w.length > 0);
   if (words.length === 0) return [];
 
-  // Calculate total weight using phoneme-aware estimation
-  const weights = words.map(w => estimateWordWeight(w));
-  const totalWeight = weights.reduce((sum, w) => sum + w, 0);
+  // js-combine-iterations: compute weights and totalWeight in a single pass
+  // (replaces separate words.map() + weights.reduce())
+  const weights = new Array<number>(words.length);
+  let totalWeight = 0;
+  for (let i = 0; i < words.length; i++) {
+    const w = estimateWordWeight(words[i]);
+    weights[i] = w;
+    totalWeight += w;
+  }
 
   // Base rate: weight units per second
   const weightRate = totalWeight / totalDuration;
+  // js-cache-property-access: half-pause value computed once outside loop
+  const halfPause = pauseAfterPunctuation / 2;
 
   const wordTimes: WordTimestamp[] = [];
   let currentTime = 0;
@@ -250,12 +262,12 @@ function heuristicWordTiming(
     const word = words[i];
     let wordDuration = weights[i] / weightRate;
 
-    // Add extra pause after punctuation
+    // js-set-map-lookups: O(1) Set.has() instead of String.includes() per iteration
     const lastChar = word[word.length - 1];
-    if (lastChar && '.!?'.includes(lastChar)) {
+    if (lastChar && SENTENCE_END_CHARS.has(lastChar)) {
       wordDuration += pauseAfterPunctuation;
-    } else if (lastChar && ',;:'.includes(lastChar)) {
-      wordDuration += pauseAfterPunctuation / 2;
+    } else if (lastChar && PAUSE_CHARS.has(lastChar)) {
+      wordDuration += halfPause;
     }
 
     wordTimes.push({
@@ -879,9 +891,12 @@ async function initialize(baseUrl: string, onnxDir: string, voiceStylePath: stri
 
   self.postMessage({ type: 'loading', modelName: 'Configuration', current: 0, total: 5 } as WorkerLoadingResponse);
 
-  ttsConfig = await loadConfig(baseUrl, onnxDir);
+  // async-parallel: config and text-processor fetches are independent — run concurrently
+  [ttsConfig, textProcessor] = await Promise.all([
+    loadConfig(baseUrl, onnxDir),
+    loadTextProcessor(baseUrl, onnxDir),
+  ]);
   sampleRate = ttsConfig.ae.sample_rate;
-  textProcessor = await loadTextProcessor(baseUrl, onnxDir);
 
   const modelPaths = [
     { name: 'Duration Predictor', path: `${baseUrl}${onnxDir}/duration_predictor.onnx` },

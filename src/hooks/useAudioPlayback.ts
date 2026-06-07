@@ -58,7 +58,8 @@ export function useAudioPlayback() {
   const audioPlaybackRate = usePlaybackStore(state => state.audioPlaybackRate);
   const enableASR = usePlaybackStore(state => state.enableASR);
   const enableLazyVoiceLoading = usePlaybackStore(state => state.enableLazyVoiceLoading);
-  const session = usePlaybackStore(state => state.session);
+  // rerender-derived-state: subscribe to primitive boolean instead of session object
+  const isPaused = usePlaybackStore(state => state.session.isPaused);
   const setIsPlaying = usePlaybackStore(state => state.setIsPlaying);
   const startSession = usePlaybackStore(state => state.startSession);
   const endSession = usePlaybackStore(state => state.endSession);
@@ -319,7 +320,7 @@ export function useAudioPlayback() {
     if (isPlaying) {
       // Check for resume FIRST - isPaused takes priority over session check
       // because pause doesn't clear the session ID
-      if (session.isPaused) {
+      if (isPaused) {
         // Resume from pause (same sentence, just paused)
         service.resume();
         setPaused(false);
@@ -364,7 +365,7 @@ export function useAudioPlayback() {
       service.pause();
       setPaused(true);
     }
-  }, [isPlaying, currentSentenceIndex, currentChapterIndex, currentChapter, session.isPaused, audioPlaybackRate, startSession, setIsPlaying, setPaused]);
+  }, [isPlaying, currentSentenceIndex, currentChapterIndex, currentChapter, isPaused, audioPlaybackRate, startSession, setIsPlaying, setPaused]);
 
   // Handle volume changes
   useEffect(() => {

@@ -99,6 +99,9 @@ export class TTSWorkerManager {
       this.readyReject = reject;
     });
 
+    // js-cache-property-access: read window.location.origin once outside the worker loop
+    const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
+
     // Create multiple workers
     for (let i = 0; i < this.numWorkers; i++) {
       const worker = new Worker(new URL('./tts.worker.ts', import.meta.url), {
@@ -108,15 +111,17 @@ export class TTSWorkerManager {
       this.workerBusy[i] = false;
       this.workerReady[i] = false;
 
-      // Set up message handler for this worker
+      // advanced-event-handler-refs: bind handler once per worker index to avoid
+      // creating a new closure on every message event
+      const workerIdx = i;
       worker.onmessage = (event: MessageEvent<WorkerOutMessage>) => {
-        this.handleWorkerMessage(event.data, i);
+        this.handleWorkerMessage(event.data, workerIdx);
       };
 
       worker.onerror = (error) => {
-        console.error(`TTS Worker ${i} error:`, error);
+        console.error(`TTS Worker ${workerIdx} error:`, error);
         if (this.readyReject) {
-          this.readyReject(new Error(`Worker ${i} initialization failed`));
+          this.readyReject(new Error(`Worker ${workerIdx} initialization failed`));
         }
       };
 
@@ -125,7 +130,7 @@ export class TTSWorkerManager {
       // Send init message with baseUrl for absolute URL construction in worker
       worker.postMessage({
         type: 'init',
-        baseUrl: typeof window !== 'undefined' ? window.location.origin : '',
+        baseUrl,
         onnxDir,
         voiceStylePath,
         enableLazyVoiceLoading
@@ -573,12 +578,15 @@ export class TTSWorkerManager {
       throw new Error('Worker not initialized');
     }
 
+    // js-cache-property-access: read window.location.origin once outside the loop
+    const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
+
     // Send voice change to all workers
     for (const worker of this.workers) {
       if (worker) {
         worker.postMessage({
           type: 'setVoice',
-          baseUrl: typeof window !== 'undefined' ? window.location.origin : '',
+          baseUrl,
           voiceStylePath
         } as WorkerInMessage);
       }

@@ -123,13 +123,15 @@ export class ParakeetASR {
 
   private resampleTo16k(audioData: Float32Array, fromSampleRate: number): Float32Array {
     const ratio = 16000 / fromSampleRate;
-    const newLength = Math.round(audioData.length * ratio);
+    // js-cache-property-access: cache audioData.length once to avoid repeated property lookups
+    const srcLastIndex = audioData.length - 1;
+    const newLength = Math.round((srcLastIndex + 1) * ratio);
     const result = new Float32Array(newLength);
 
     for (let i = 0; i < newLength; i++) {
       const srcIndex = i / ratio;
       const srcIndexFloor = Math.floor(srcIndex);
-      const srcIndexCeil = Math.min(srcIndexFloor + 1, audioData.length - 1);
+      const srcIndexCeil = Math.min(srcIndexFloor + 1, srcLastIndex);
       const fraction = srcIndex - srcIndexFloor;
 
       result[i] = audioData[srcIndexFloor] * (1 - fraction) + audioData[srcIndexCeil] * fraction;

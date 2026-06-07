@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, ReactNode } from 'react';
+import { memo, useCallback, useMemo, ReactNode } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import { Sentence, BlockType } from '@/lib/epub/types';
 import { TimestampSource, useSentenceStateStore } from '@/store/sentenceStateStore';
@@ -116,24 +116,36 @@ function BlockContainer({
 /**
  * Wrapper component that subscribes to individual sentence state.
  * This ensures each sentence only re-renders when its own state changes.
+ *
+ * rerender-memo: Memoized with a custom comparator so a new inline onClick
+ * arrow (created per itemContent call) does not trigger a re-render — the
+ * comparator intentionally skips onClick, matching SentenceSpan's own
+ * memo comparator. The stable `onSentenceClick` prop is the real callback.
  */
-function SentenceWithState({
+const SentenceWithState = memo(function SentenceWithState({
   sentence,
   globalIndex,
   isActive,
   highlightedWordIndex,
   timestampSource,
-  onClick
+  onSentenceClick,
 }: {
   sentence: Sentence;
   globalIndex: number;
   isActive: boolean;
   highlightedWordIndex: number | null;
   timestampSource: TimestampSource | null;
-  onClick: () => void;
+  onSentenceClick: (index: number) => void;
 }) {
   // Subscribe only to this sentence's state - prevents re-renders when other sentences change
-  const state = useSentenceStateStore(state => state.sentenceStates[sentence.id]);
+  const state = useSentenceStateStore(store => store.sentenceStates[sentence.id]);
+
+  // rerender-functional-setstate / stable handler: build the click handler
+  // inside the component so it captures stable `globalIndex` without
+  // forcing the parent to allocate a new closure per row per render.
+  const handleClick = useCallback(() => {
+    onSentenceClick(globalIndex);
+  }, [onSentenceClick, globalIndex]);
 
   return (
     <SentenceSpan
@@ -143,10 +155,21 @@ function SentenceWithState({
       isHighlighted={isActive}
       highlightedWordIndex={isActive ? highlightedWordIndex : null}
       timestampSource={isActive ? timestampSource : null}
-      onClick={onClick}
+      onClick={handleClick}
     />
   );
-}
+}, (prev, next) => {
+  // Custom comparator: skip re-render when only the parent's inline onClick
+  // reference changes. All other props must match exactly.
+  return (
+    prev.sentence === next.sentence &&
+    prev.globalIndex === next.globalIndex &&
+    prev.isActive === next.isActive &&
+    prev.highlightedWordIndex === next.highlightedWordIndex &&
+    prev.timestampSource === next.timestampSource &&
+    prev.onSentenceClick === next.onSentenceClick
+  );
+});
 
 /**
  * Virtualized sentence list component that renders blocks efficiently.
@@ -190,27 +213,32 @@ export function VirtualizedSentenceList({
     if (!block) return null;
 
     return (
-      <BlockContainer
-        type={block.type}
-        level={block.level}
-        isFirst={index === 0}
-      >
-        {block.sentences.map(({ sentence, globalIndex }) => {
-          const isActive = highlightedSentenceId === sentence.id;
+      // rendering-content-visibility: defer layout/paint for off-screen blocks.
+      // contain-intrinsic-size hints the browser at ~120px per block so scrollbar
+      // sizing stays accurate before the block is rendered.
+      <div style={{ contentVisibility: 'auto', containIntrinsicSize: '0 120px' }}>
+        <BlockContainer
+          type={block.type}
+          level={block.level}
+          isFirst={index === 0}
+        >
+          {block.sentences.map(({ sentence, globalIndex }) => {
+            const isActive = highlightedSentenceId === sentence.id;
 
-          return (
-            <SentenceWithState
-              key={sentence.id}
-              sentence={sentence}
-              globalIndex={globalIndex}
-              isActive={isActive}
-              highlightedWordIndex={highlightedWordIndex}
-              timestampSource={highlightTimestampSource}
-              onClick={() => handleClick(globalIndex)}
-            />
-          );
-        })}
-      </BlockContainer>
+            return (
+              <SentenceWithState
+                key={sentence.id}
+                sentence={sentence}
+                globalIndex={globalIndex}
+                isActive={isActive}
+                highlightedWordIndex={highlightedWordIndex}
+                timestampSource={highlightTimestampSource}
+                onSentenceClick={handleClick}
+              />
+            );
+          })}
+        </BlockContainer>
+      </div>
     );
   }, [
     blocks,

@@ -44,6 +44,9 @@ const VolumeIcon = ({ muted }: { muted?: boolean }) => (
   </svg>
 );
 
+// Static thumb element — hoisted to avoid re-creation on every render (rule 6.3)
+const toggleSwitchThumb = <span className="toggle-switch-thumb" />;
+
 // Reusable toggle row to avoid repeating the switch pattern
 function ToggleRow({
   label,
@@ -72,7 +75,7 @@ function ToggleRow({
         role="switch"
         aria-checked={checked}
       >
-        <span className="toggle-switch-thumb" />
+        {toggleSwitchThumb}
       </button>
     </div>
   );
@@ -115,11 +118,14 @@ export const SettingsSheet = memo(function SettingsSheet({
   const isPlaying = usePlaybackStore((state) => state.isPlaying);
   const setIsPlaying = usePlaybackStore((state) => state.setIsPlaying);
 
+  // Stable callback for sleep timer expiry — avoids re-creating useSleepTimer on every render (rule 5.9)
+  const handleTimerExpired = useCallback(() => {
+    setIsPlaying(false);
+  }, [setIsPlaying]);
+
   // Sleep timer integration
   const sleepTimer = useSleepTimer({
-    onTimerExpired: () => {
-      setIsPlaying(false);
-    },
+    onTimerExpired: handleTimerExpired,
     isPlaying
   });
 

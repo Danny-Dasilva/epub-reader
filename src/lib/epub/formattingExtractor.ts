@@ -269,23 +269,26 @@ function processNode(node: Node, state: ExtractorState): void {
 function mergeFormattingSpans(spans: FormattingSpan[]): FormattingSpan[] {
   if (spans.length === 0) return [];
 
-  // Group by type
+  // Group by type (js-set-map-lookups: avoid redundant set() when key already present)
   const byType = new Map<FormattingType, FormattingSpan[]>();
   for (const span of spans) {
-    const existing = byType.get(span.type) || [];
-    existing.push(span);
-    byType.set(span.type, existing);
+    const existing = byType.get(span.type);
+    if (existing) {
+      existing.push(span);
+    } else {
+      byType.set(span.type, [span]);
+    }
   }
 
   const merged: FormattingSpan[] = [];
 
   for (const [type, typeSpans] of byType) {
-    // Sort by start position
-    typeSpans.sort((a, b) => a.startIndex - b.startIndex);
+    // Sort by start position without mutating (js-tosorted-immutable)
+    const sortedSpans = typeSpans.toSorted((a, b) => a.startIndex - b.startIndex);
 
     let current: FormattingSpan | null = null;
 
-    for (const span of typeSpans) {
+    for (const span of sortedSpans) {
       if (!current) {
         current = { ...span };
       } else if (span.startIndex <= current.endIndex) {

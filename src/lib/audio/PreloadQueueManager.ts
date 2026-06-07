@@ -19,6 +19,9 @@ import { float32ToWav, createAudioBlobUrl, resampleAudio } from '../tts/audioUti
 import { MinHeap } from '../utils/MinHeap';
 import { getAudioCacheService, AudioCacheParams } from './AudioCacheService';
 
+// js-hoist-regexp: hoisted module-level constant avoids recreating regex on every estimateWordTimings call
+const WHITESPACE_RE = /\s+/;
+
 export interface PreloadConfig {
   preloadCount: number;      // Max number of sentences to preload ahead (default: 4)
   preloadCharLimit: number;  // Target character count limit (default: 800)
@@ -213,6 +216,7 @@ export class PreloadQueueManager {
     }
 
     // Queue sentences with priorities - Optimization #2: use heap for O(log n) insert
+    // js-combine-iterations: queue push and stateCallback in a single pass over toPreload
     this.queue.clear();
     this.queuedIds.clear();  // Performance optimization #4
     toPreload.forEach((sentence, index) => {
@@ -222,6 +226,7 @@ export class PreloadQueueManager {
         abortController: new AbortController()
       });
       this.queuedIds.add(sentence.id);  // Performance optimization #4
+      this.stateCallback?.(sentence.id, 'preloading');
     });
 
     // Link abort controllers to session (use once: true to prevent listener accumulation)
@@ -233,11 +238,6 @@ export class PreloadQueueManager {
         req.abortController.abort();
       }
     }, { once: true });
-
-    // Mark all as preloading
-    for (const sentence of toPreload) {
-      this.stateCallback?.(sentence.id, 'preloading');
-    }
 
     // Start processing
     this.processQueue();
@@ -617,7 +617,9 @@ export class PreloadQueueManager {
       }
     }
 
-    while (this.cache.size >= this.config.maxCacheSize && this.accessOrder.size > 0) {
+    // js-cache-property-access: read once before the loop to avoid repeated property chain traversal
+    const maxCacheSize = this.config.maxCacheSize;
+    while (this.cache.size >= maxCacheSize && this.accessOrder.size > 0) {
       let toEvict: string | null = null;
       let oldestTime = Infinity;
 
@@ -757,7 +759,7 @@ export class PreloadQueueManager {
    * Longer words get proportionally more time than shorter words
    */
   private estimateWordTimings(text: string, duration: number): WordTimestamp[] {
-    const words = text.split(/\s+/).filter(w => w.length > 0);
+    const words = text.split(WHITESPACE_RE).filter(w => w.length > 0);
     if (words.length === 0) return [];
 
     // Weight by character count for more natural timing
@@ -1054,6 +1056,7 @@ export class PreloadQueueManager {
     }
 
     // Create queue with priorities - Optimization #2: use heap for O(log n) insert
+    // js-combine-iterations: queue push and stateCallback in a single pass over toPreload
     this.queue.clear();
     this.queuedIds.clear();  // Performance optimization #4
     toPreload.forEach((sentence, index) => {
@@ -1063,6 +1066,7 @@ export class PreloadQueueManager {
         abortController: new AbortController()
       });
       this.queuedIds.add(sentence.id);  // Performance optimization #4
+      this.stateCallback?.(sentence.id, 'preloading');
     });
 
     // Link abort controllers to session (use once: true to prevent listener accumulation)
@@ -1074,11 +1078,6 @@ export class PreloadQueueManager {
         req.abortController.abort();
       }
     }, { once: true });
-
-    // Mark all as preloading
-    for (const sentence of toPreload) {
-      this.stateCallback?.(sentence.id, 'preloading');
-    }
 
     console.log(`[Preload] Queued ${toPreload.length} sentences for full chapter preload (maxConcurrent: ${this.config.maxConcurrentTTS})`);
 

@@ -65,26 +65,18 @@ export function useBookSearch({
     };
   }, [query, debounceMs]);
 
-  // Perform search when debounced query changes
-  const results = useMemo(() => {
+  // Perform search and compute total match count in a single memo pass (js-combine-iterations)
+  const { results, totalMatches } = useMemo(() => {
     if (!book || !debouncedQuery) {
-      return [];
+      return { results: [] as SearchResult[], totalMatches: 0 };
     }
-    return searchBook(book, debouncedQuery, pagination, maxResults);
+    const found = searchBook(book, debouncedQuery, pagination, maxResults);
+    // If we got fewer results than max, that's the total; otherwise count all
+    const total = found.length < maxResults
+      ? found.length
+      : countMatches(book, debouncedQuery);
+    return { results: found, totalMatches: total };
   }, [book, debouncedQuery, pagination, maxResults]);
-
-  // Get total match count
-  const totalMatches = useMemo(() => {
-    if (!book || !debouncedQuery) {
-      return 0;
-    }
-    // If we got fewer results than max, that's the total
-    if (results.length < maxResults) {
-      return results.length;
-    }
-    // Otherwise count all matches
-    return countMatches(book, debouncedQuery);
-  }, [book, debouncedQuery, results.length, maxResults]);
 
   // Clear search
   const clearSearch = useCallback(() => {

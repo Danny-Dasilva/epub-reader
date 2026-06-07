@@ -6,6 +6,9 @@ import { TTSConfig, TTSResult, Style } from './types';
 const PARAGRAPH_SPLIT_PATTERN = /\n\s*\n+/;
 const SENTENCE_SPLIT_PATTERN = /(?<!Mr\.|Mrs\.|Ms\.|Dr\.|Prof\.|Sr\.|Jr\.|Ph\.D\.|etc\.|e\.g\.|i\.e\.|vs\.|Inc\.|Ltd\.|Co\.|Corp\.|St\.|Ave\.|Blvd\.)(?<!\b[A-Z]\.)(?<=[.!?])\s+/;
 
+// js-cache-property-access: hoist constant used in tight Box-Muller inner loop
+const TWO_PI = 2.0 * Math.PI;
+
 /**
  * Chunk text into manageable segments
  */
@@ -146,12 +149,19 @@ export class TextToSpeech {
     const textMaskShape = [bsz, 1, textMask[0][0].length];
     const textMaskTensor = new ort.Tensor('float32', textMaskFlat, textMaskShape);
 
-    // Predict duration
-    const dpOutputs = await this.dpOrt.run({
-      text_ids: textIdsTensor,
-      style_dp: style.dp,
-      text_mask: textMaskTensor
-    });
+    // async-parallel: dpOrt and textEncOrt use the same inputs but are independent — run in parallel
+    const [dpOutputs, textEncOutputs] = await Promise.all([
+      this.dpOrt.run({
+        text_ids: textIdsTensor,
+        style_dp: style.dp,
+        text_mask: textMaskTensor
+      }),
+      this.textEncOrt.run({
+        text_ids: textIdsTensor,
+        style_ttl: style.ttl,
+        text_mask: textMaskTensor
+      })
+    ]);
     const duration = Array.from(dpOutputs.duration.data as Float32Array);
 
     // Apply speed factor to duration
@@ -159,12 +169,6 @@ export class TextToSpeech {
       duration[i] /= speed;
     }
 
-    // Encode text
-    const textEncOutputs = await this.textEncOrt.run({
-      text_ids: textIdsTensor,
-      style_ttl: style.ttl,
-      text_mask: textMaskTensor
-    });
     const textEmb = textEncOutputs.text_emb;
 
     // Sample noisy latent
@@ -210,6 +214,7 @@ export class TextToSpeech {
       const denoised = Array.from(vectorEstOutputs.denoised_latent.data as Float32Array);
 
       // Reshape to 3D
+      // js-cache-property-access: cache xt dimensions before clearing xt
       const latentDim = xt[0].length;
       const latentLen = xt[0][0].length;
       xt = [];
@@ -310,7 +315,7 @@ export class TextToSpeech {
           // Box-Muller transform
           const u1 = Math.max(0.0001, Math.random());
           const u2 = Math.random();
-          const val = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+          const val = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(TWO_PI * u2);
           row.push(val);
         }
         batch.push(row);

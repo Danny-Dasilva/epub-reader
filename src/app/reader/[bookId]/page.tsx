@@ -96,15 +96,15 @@ export default function ReaderPage() {
   const saveProgress = useReadingProgressStore(state => state.saveProgress);
 
   // Playback store
+  // rerender-defer-reads: setIsPlaying and enableASR are not used directly in this
+  // component — they are consumed inside useAudioPlayback. Avoid subscribing here.
   const isPlaying = usePlaybackStore(state => state.isPlaying);
-  const setIsPlaying = usePlaybackStore(state => state.setIsPlaying);
   const volume = usePlaybackStore(state => state.volume);
   const setVolume = usePlaybackStore(state => state.setVolume);
   const speechRate = usePlaybackStore(state => state.speechRate);
   const setSpeechRate = usePlaybackStore(state => state.setSpeechRate);
   const audioPlaybackRate = usePlaybackStore(state => state.audioPlaybackRate);
   const setAudioPlaybackRate = usePlaybackStore(state => state.setAudioPlaybackRate);
-  const enableASR = usePlaybackStore(state => state.enableASR);
   const enableIndexedDBStorage = usePlaybackStore(state => state.enableIndexedDBStorage);
 
   // UI store

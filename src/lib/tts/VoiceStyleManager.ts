@@ -81,6 +81,8 @@ export class VoiceStyleManager {
    * Clear all cached voices
    */
   clearCache(): void {
+    // js-early-exit: skip iteration if cache is empty
+    if (this.cache.size === 0) return;
     // Dispose all tensors before clearing
     for (const [voiceId, cached] of this.cache.entries()) {
       cached.ttl.dispose?.();
