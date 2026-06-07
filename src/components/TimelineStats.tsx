@@ -11,13 +11,28 @@ interface TimelineStatsProps {
   preloadPercentage: number;
   asrCount?: number;
   asrPercentage?: number;
-  enableASR?: boolean;
   bookProgress: number;
   currentTime: number;
   estimatedDuration: number;
   timeEstimate?: TimeEstimate;
   isPlaying?: boolean;
 }
+
+// Hoisted static SVG - avoids re-creation on every render
+const ChevronIcon = (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <polyline points="6 9 12 15 18 9" />
+  </svg>
+);
 
 function formatTime(seconds: number): string {
   const mins = Math.floor(seconds / 60);
@@ -33,7 +48,6 @@ export const TimelineStats = memo(function TimelineStats({
   preloadPercentage,
   asrCount,
   asrPercentage,
-  enableASR = false,
   bookProgress,
   currentTime,
   estimatedDuration,
@@ -52,7 +66,7 @@ export const TimelineStats = memo(function TimelineStats({
         <>
           <button
             className="timeline-stats-mobile-toggle"
-            onClick={() => setExpanded(!expanded)}
+            onClick={() => setExpanded(prev => !prev)}
             aria-expanded={expanded}
             aria-label={expanded ? 'Collapse stats' : 'Expand stats'}
           >
@@ -63,43 +77,34 @@ export const TimelineStats = memo(function TimelineStats({
                   <span className="stat-primary-value">~{timeEstimate.bookRemaining.formatted}</span>
                 </span>
               ) : null}
+
               <span className="stat-primary-item">
                 <span className="stat-primary-label">Progress:</span>
                 <span className="stat-primary-value">{Math.round(playedPercentage)}%</span>
               </span>
             </div>
-            <svg
-              className={`timeline-stats-mobile-chevron ${expanded ? 'expanded' : ''}`}
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <polyline points="6 9 12 15 18 9" />
-            </svg>
+            <span className={`timeline-stats-mobile-chevron ${expanded ? 'expanded' : ''}`}>
+              {ChevronIcon}
+            </span>
           </button>
 
-          {expanded && (
+          {expanded ? (
             <div className="timeline-stats-mobile-expanded">
-              {timeEstimate && (
+              {timeEstimate ? (
                 <>
-                  {timeEstimate.chapterRemaining.ms > 0 && (
+                  {timeEstimate.chapterRemaining.ms > 0 ? (
                     <div className="stat-item">
                       <span className="stat-label">Chapter Left</span>
                       <span className="stat-value">~{timeEstimate.chapterRemaining.formatted}</span>
                     </div>
-                  )}
-                  {timeEstimate.bookRemaining.ms > 0 && (
+                  ) : null}
+                  {timeEstimate.bookRemaining.ms > 0 ? (
                     <div className="stat-item">
                       <span className="stat-label">Book Left</span>
                       <span className="stat-value">~{timeEstimate.bookRemaining.formatted}</span>
                     </div>
-                  )}
-                  {isPlaying && timeEstimate.estimatedFinishTime && (
+                  ) : null}
+                  {isPlaying && timeEstimate.estimatedFinishTime ? (
                     <div className="stat-item">
                       <span className="stat-label">Finish At</span>
                       <span className="stat-value">
@@ -109,7 +114,7 @@ export const TimelineStats = memo(function TimelineStats({
                         })}
                       </span>
                     </div>
-                  )}
+                  ) : null}
                   <div className="stat-item">
                     <span className="stat-label">Reading Pace</span>
                     <span className="stat-value">
@@ -117,7 +122,7 @@ export const TimelineStats = memo(function TimelineStats({
                     </span>
                   </div>
                 </>
-              )}
+              ) : null}
               <div className="stat-item played">
                 <span className="stat-label">Played</span>
                 <span className="stat-value">
@@ -136,36 +141,36 @@ export const TimelineStats = memo(function TimelineStats({
                   {preloadedCount}/{totalSentences} ({Math.round(preloadPercentage)}%)
                 </span>
               </div>
-              {enableASR && asrCount !== undefined && asrPercentage !== undefined && (
+              {asrCount !== undefined && asrPercentage !== undefined ? (
                 <div className="stat-item asr">
                   <span className="stat-label">STT</span>
                   <span className="stat-value">
                     {asrCount}/{totalSentences} ({Math.round(asrPercentage)}%)
                   </span>
                 </div>
-              )}
+              ) : null}
               <div className="stat-item book">
                 <span className="stat-label">Book</span>
                 <span className="stat-value">{bookProgress.toFixed(1)}%</span>
               </div>
             </div>
-          )}
+          ) : null}
         </>
       ) : (
         /* Desktop View - Inline */
         <div className="timeline-stats-desktop">
-          {timeEstimate && timeEstimate.bookRemaining.ms > 0 && (
+          {timeEstimate && timeEstimate.bookRemaining.ms > 0 ? (
             <div className="stat-item remaining">
               <span className="stat-label">Remaining</span>
               <span className="stat-value">~{timeEstimate.bookRemaining.formatted}</span>
             </div>
-          )}
-          {timeEstimate && timeEstimate.chapterRemaining.ms > 0 && (
+          ) : null}
+          {timeEstimate && timeEstimate.chapterRemaining.ms > 0 ? (
             <div className="stat-item chapter">
               <span className="stat-label">Chapter</span>
               <span className="stat-value">~{timeEstimate.chapterRemaining.formatted}</span>
             </div>
-          )}
+          ) : null}
           <div className="stat-item played">
             <span className="stat-label">Played</span>
             <span className="stat-value">
@@ -187,14 +192,14 @@ export const TimelineStats = memo(function TimelineStats({
               {preloadedCount}/{totalSentences}
             </span>
           </div>
-          {enableASR && asrCount !== undefined && asrPercentage !== undefined && (
+          {asrCount !== undefined && asrPercentage !== undefined ? (
             <div className="stat-item asr">
               <span className="stat-label">STT</span>
               <span className="stat-value">
                 {asrCount}/{totalSentences}
               </span>
             </div>
-          )}
+          ) : null}
         </div>
       )}
     </div>

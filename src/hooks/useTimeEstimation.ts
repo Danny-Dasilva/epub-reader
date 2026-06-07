@@ -8,7 +8,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { ParsedBook } from '@/lib/epub/types';
 import { ReadingPaceTracker } from '@/lib/stats/ReadingPaceTracker';
-import { getAudioPosition } from '@/store/sentenceStateStore';
 
 export interface TimeEstimate {
   chapterRemaining: { ms: number; formatted: string };
@@ -40,6 +39,13 @@ function formatDuration(ms: number): string {
   return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
 }
 
+const DEFAULT_ESTIMATE: TimeEstimate = {
+  chapterRemaining: { ms: 0, formatted: '0m' },
+  bookRemaining: { ms: 0, formatted: '0m' },
+  estimatedFinishTime: null,
+  readingPace: { sentencesPerMinute: 12 } // Default: ~5s per sentence
+};
+
 /**
  * Hook for calculating time estimates based on reading pace
  */
@@ -49,24 +55,23 @@ export function useTimeEstimation(
   currentSentenceIndex: number,
   isPlaying: boolean
 ): TimeEstimate {
-  const paceTrackerRef = useRef<ReadingPaceTracker>(new ReadingPaceTracker());
+  // Lazy init: avoid creating a new ReadingPaceTracker on every render
+  const paceTrackerRef = useRef<ReadingPaceTracker | null>(null);
+  if (paceTrackerRef.current === null) {
+    paceTrackerRef.current = new ReadingPaceTracker();
+  }
   const lastSentenceRef = useRef<string | null>(null);
   const sentenceStartTimeRef = useRef<number | null>(null);
   const updateIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  const [estimate, setEstimate] = useState<TimeEstimate>({
-    chapterRemaining: { ms: 0, formatted: '0m' },
-    bookRemaining: { ms: 0, formatted: '0m' },
-    estimatedFinishTime: null,
-    readingPace: { sentencesPerMinute: 12 } // Default: ~5s per sentence
-  });
+  const [estimate, setEstimate] = useState<TimeEstimate>(DEFAULT_ESTIMATE);
 
   // Start tracking session when playback starts
   useEffect(() => {
     if (isPlaying && !book) return;
 
     if (isPlaying) {
-      paceTrackerRef.current.startSession();
+      paceTrackerRef.current!.startSession();
     }
   }, [isPlaying, book]);
 
@@ -87,7 +92,7 @@ export function useTimeEstimation(
       // Record the time it took to complete the previous sentence
       if (sentenceStartTimeRef.current !== null) {
         const duration = Date.now() - sentenceStartTimeRef.current;
-        paceTrackerRef.current.recordSentenceComplete(duration);
+        paceTrackerRef.current!.recordSentenceComplete(duration);
       }
     }
 
@@ -98,26 +103,12 @@ export function useTimeEstimation(
 
   // Calculate estimates
   const calculateEstimates = useCallback(() => {
-    if (!book) {
-      return {
-        chapterRemaining: { ms: 0, formatted: '0m' },
-        bookRemaining: { ms: 0, formatted: '0m' },
-        estimatedFinishTime: null,
-        readingPace: { sentencesPerMinute: 12 }
-      };
-    }
+    if (!book) return DEFAULT_ESTIMATE;
 
     const currentChapter = book.chapters[currentChapterIndex];
-    if (!currentChapter) {
-      return {
-        chapterRemaining: { ms: 0, formatted: '0m' },
-        bookRemaining: { ms: 0, formatted: '0m' },
-        estimatedFinishTime: null,
-        readingPace: { sentencesPerMinute: 12 }
-      };
-    }
+    if (!currentChapter) return DEFAULT_ESTIMATE;
 
-    const paceTracker = paceTrackerRef.current;
+    const paceTracker = paceTrackerRef.current!;
 
     // Calculate sentences remaining in current chapter
     const sentencesRemainingInChapter = Math.max(
@@ -183,11 +174,6 @@ export function useTimeEstimation(
       }
     };
   }, [isPlaying, calculateEstimates]);
-
-  // Recalculate when position changes
-  useEffect(() => {
-    setEstimate(calculateEstimates());
-  }, [currentChapterIndex, currentSentenceIndex, calculateEstimates]);
 
   return estimate;
 }

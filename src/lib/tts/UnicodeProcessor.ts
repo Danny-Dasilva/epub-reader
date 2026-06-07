@@ -1,3 +1,29 @@
+const EMOJI_PATTERN = /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F780}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F1E6}-\u{1F1FF}]+/gu;
+const DIACRITICS_PATTERN = /[\u0302\u0303\u0304\u0305\u0306\u0307\u0308\u030A\u030B\u030C\u0327\u0328\u0329\u032A\u032B\u032C\u032D\u032E\u032F]/g;
+const SPECIAL_SYMBOLS_PATTERN = /[♥☆♡©\\]/g;
+const ENDING_PUNCTUATION_PATTERN = /[.!?;:,'\"')\]}…。」』】〉》›»]$/;
+
+// Hoisted: punctuation spacing patterns (avoid re-creation per call)
+const SPACE_BEFORE_COMMA = / ,/g;
+const SPACE_BEFORE_PERIOD = / \./g;
+const SPACE_BEFORE_EXCLAIM = / !/g;
+const SPACE_BEFORE_QUESTION = / \?/g;
+const SPACE_BEFORE_SEMI = / ;/g;
+const SPACE_BEFORE_COLON = / :/g;
+const SPACE_BEFORE_APOS = / '/g;
+const DOUBLE_QUOTE_PATTERN = /""/g;
+const DOUBLE_APOS_PATTERN = /''/g;
+const DOUBLE_BACKTICK_PATTERN = /``/g;
+const WHITESPACE_COLLAPSE = /\s+/g;
+
+// Hoisted: character replacement map (avoid object allocation per call)
+const REPLACEMENTS: ReadonlyArray<[string, string]> = [
+  ['–', '-'], ['‑', '-'], ['—', '-'], ['¯', ' '], ['_', ' '],
+  ['\u201C', '"'], ['\u201D', '"'], ['\u2018', "'"], ['\u2019', "'"],
+  ['´', "'"], ['`', "'"], ['[', ' '], [']', ' '], ['|', ' '], ['/', ' '],
+  ['#', ' '], ['→', ' '], ['←', ' '],
+];
+
 /**
  * Unicode Text Processor for TTS
  * Ported from supertonic/web/helper.js
@@ -15,12 +41,14 @@ export class UnicodeProcessor {
     const textIdsLengths = processedTexts.map(text => text.length);
     const maxLen = Math.max(...textIdsLengths);
 
+    const indexer = this.indexer;
+    const indexerLen = indexer.length;
     const textIds = processedTexts.map(text => {
       const row = new Array(maxLen).fill(0);
       for (let j = 0; j < text.length; j++) {
         const codePoint = text.codePointAt(j);
-        row[j] = codePoint !== undefined && codePoint < this.indexer.length
-          ? this.indexer[codePoint]
+        row[j] = codePoint !== undefined && codePoint < indexerLen
+          ? indexer[codePoint]
           : -1;
       }
       return row;
@@ -31,79 +59,35 @@ export class UnicodeProcessor {
   }
 
   preprocessText(text: string): string {
-    // Normalize text
     text = text.normalize('NFKD');
+    text = text.replace(EMOJI_PATTERN, '');
 
-    // Remove emojis (wide Unicode range)
-    const emojiPattern = /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F780}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F1E6}-\u{1F1FF}]+/gu;
-    text = text.replace(emojiPattern, '');
-
-    // Replace various dashes and symbols
-    const replacements: Record<string, string> = {
-      '–': '-',
-      '‑': '-',
-      '—': '-',
-      '¯': ' ',
-      '_': ' ',
-      '\u201C': '"',  // left double quote "
-      '\u201D': '"',  // right double quote "
-      '\u2018': "'",  // left single quote '
-      '\u2019': "'",  // right single quote '
-      '´': "'",
-      '`': "'",
-      '[': ' ',
-      ']': ' ',
-      '|': ' ',
-      '/': ' ',
-      '#': ' ',
-      '→': ' ',
-      '←': ' ',
-    };
-    for (const [k, v] of Object.entries(replacements)) {
+    for (const [k, v] of REPLACEMENTS) {
       text = text.replaceAll(k, v);
     }
 
-    // Remove combining diacritics
-    text = text.replace(/[\u0302\u0303\u0304\u0305\u0306\u0307\u0308\u030A\u030B\u030C\u0327\u0328\u0329\u032A\u032B\u032C\u032D\u032E\u032F]/g, '');
+    text = text.replace(DIACRITICS_PATTERN, '');
+    text = text.replace(SPECIAL_SYMBOLS_PATTERN, '');
 
-    // Remove special symbols
-    text = text.replace(/[♥☆♡©\\]/g, '');
+    text = text.replaceAll('@', ' at ');
+    text = text.replaceAll('e.g.,', 'for example, ');
+    text = text.replaceAll('i.e.,', 'that is, ');
 
-    // Replace known expressions
-    const exprReplacements: Record<string, string> = {
-      '@': ' at ',
-      'e.g.,': 'for example, ',
-      'i.e.,': 'that is, ',
-    };
-    for (const [k, v] of Object.entries(exprReplacements)) {
-      text = text.replaceAll(k, v);
-    }
+    text = text.replace(SPACE_BEFORE_COMMA, ',')
+      .replace(SPACE_BEFORE_PERIOD, '.')
+      .replace(SPACE_BEFORE_EXCLAIM, '!')
+      .replace(SPACE_BEFORE_QUESTION, '?')
+      .replace(SPACE_BEFORE_SEMI, ';')
+      .replace(SPACE_BEFORE_COLON, ':')
+      .replace(SPACE_BEFORE_APOS, "'");
 
-    // Fix spacing around punctuation
-    text = text.replace(/ ,/g, ',');
-    text = text.replace(/ \./g, '.');
-    text = text.replace(/ !/g, '!');
-    text = text.replace(/ \?/g, '?');
-    text = text.replace(/ ;/g, ';');
-    text = text.replace(/ :/g, ':');
-    text = text.replace(/ '/g, "'");
+    text = text.replace(DOUBLE_QUOTE_PATTERN, '"');
+    text = text.replace(DOUBLE_APOS_PATTERN, "'");
+    text = text.replace(DOUBLE_BACKTICK_PATTERN, '`');
 
-    // Remove duplicate quotes
-    while (text.includes('""')) {
-      text = text.replace('""', '"');
-    }
-    while (text.includes("''")) {
-      text = text.replace("''", "'");
-    }
-    while (text.includes('``')) {
-      text = text.replace('``', '`');
-    }
+    text = text.replace(WHITESPACE_COLLAPSE, ' ').trim();
 
-    // Remove extra spaces
-    text = text.replace(/\s+/g, ' ').trim();
-
-    // If text doesn't end with punctuation, add a period
-    if (!/[.!?;:,'\"')\]}…。」』】〉》›»]$/.test(text)) {
+    if (!ENDING_PUNCTUATION_PATTERN.test(text)) {
       text += '.';
     }
 

@@ -80,11 +80,11 @@ export const SearchPanel = memo(function SearchPanel({
         onClick={() => handleResultClick(result)}
       >
         <span className="search-result-chapter">{result.chapterTitle}</span>
-        {result.pageNumber > 0 && (
+        {result.pageNumber > 0 ? (
           <span className="search-result-location">
             Chapter {result.chapterIndex + 1}, Page {result.pageNumber}
           </span>
-        )}
+        ) : null}
         <span className="search-result-text">
           <span className="search-result-context">{context.prefix}</span>
           <mark className="search-result-match">{context.match}</mark>
@@ -113,7 +113,7 @@ export const SearchPanel = memo(function SearchPanel({
           autoCapitalize="off"
           spellCheck={false}
         />
-        {query && (
+        {query ? (
           <button
             className="search-clear-btn"
             onClick={() => onQueryChange('')}
@@ -121,7 +121,7 @@ export const SearchPanel = memo(function SearchPanel({
           >
             <CloseIcon />
           </button>
-        )}
+        ) : null}
         <button
           className="search-close-btn"
           onClick={onClose}
@@ -133,19 +133,13 @@ export const SearchPanel = memo(function SearchPanel({
 
       {/* Results */}
       <div className="search-results">
-        {isSearching && (
+        {isSearching ? (
           <div className="search-status">Searching...</div>
-        )}
-
-        {!isSearching && query.length >= 2 && results.length === 0 && (
-          <div className="search-status">No matches found</div>
-        )}
-
-        {!isSearching && query.length > 0 && query.length < 2 && (
+        ) : query.length > 0 && query.length < 2 ? (
           <div className="search-status">Type at least 2 characters</div>
-        )}
-
-        {!isSearching && results.length > 0 && (
+        ) : query.length >= 2 && results.length === 0 ? (
+          <div className="search-status">No matches found</div>
+        ) : results.length > 0 ? (
           <>
             <div className="search-count">
               {totalMatches === results.length
@@ -156,7 +150,7 @@ export const SearchPanel = memo(function SearchPanel({
               {results.map((result, index) => renderResult(result, index))}
             </div>
           </>
-        )}
+        ) : null}
       </div>
     </div>
   );

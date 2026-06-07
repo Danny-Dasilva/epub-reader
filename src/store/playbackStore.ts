@@ -3,8 +3,6 @@ import { persist } from 'zustand/middleware';
 
 export interface PlaybackSession {
   abortController: AbortController | null;
-  sentenceId: string | null;
-  chapterIndex: number;
   isPaused: boolean;
 }
 
@@ -18,8 +16,8 @@ interface PlaybackState {
   enableIndexedDBStorage: boolean;  // Enable IndexedDB storage with compression
   enableLazyVoiceLoading: boolean;  // Enable lazy voice loading (loads only selected voice on init)
   enableAudioCaching: boolean;  // Enable service worker audio caching for instant replay
-  enableStreamingTTS: boolean;  // Enable streaming TTS for faster time-to-first-audio (~500ms vs 2-4s)
   session: PlaybackSession;
+  _hasHydrated: boolean;
 }
 
 interface PlaybackActions {
@@ -32,17 +30,13 @@ interface PlaybackActions {
   setEnableIndexedDBStorage: (enabled: boolean) => void;
   setEnableLazyVoiceLoading: (enabled: boolean) => void;
   setEnableAudioCaching: (enabled: boolean) => void;
-  setEnableStreamingTTS: (enabled: boolean) => void;
-  startSession: (sentenceId: string, chapterIndex: number) => AbortController;
+  startSession: () => AbortController;
   endSession: () => void;
   setPaused: (paused: boolean) => void;
-  updateSessionSentence: (sentenceId: string) => void;
 }
 
 const initialSession: PlaybackSession = {
   abortController: null,
-  sentenceId: null,
-  chapterIndex: 0,
   isPaused: false
 };
 
@@ -59,8 +53,8 @@ export const usePlaybackStore = create<PlaybackState & PlaybackActions>()(
       enableIndexedDBStorage: true,  // Enable IndexedDB by default
       enableLazyVoiceLoading: true,  // Enable lazy voice loading by default
       enableAudioCaching: true,  // Enable audio caching by default for instant replay
-      enableStreamingTTS: true,  // Enable streaming TTS by default
       session: initialSession,
+      _hasHydrated: false,
 
       // Actions
       setIsPlaying: (isPlaying) => set({ isPlaying }),
@@ -81,19 +75,10 @@ export const usePlaybackStore = create<PlaybackState & PlaybackActions>()(
 
       setEnableAudioCaching: (enableAudioCaching) => set({ enableAudioCaching }),
 
-      setEnableStreamingTTS: (enableStreamingTTS) => set({ enableStreamingTTS }),
-
-      startSession: (sentenceId, chapterIndex) => {
+      startSession: () => {
         const { session } = get();
 
-        // Idempotent for same sentence - don't abort in-progress synthesis
-        // This prevents killing ongoing TTS synthesis when effect re-runs
-        if (session.sentenceId === sentenceId && session.abortController && !session.abortController.signal.aborted) {
-          // Same sentence, keep existing controller to preserve in-flight synthesis
-          return session.abortController;
-        }
-
-        // Different sentence - abort previous operations
+        // Abort previous operations
         if (session.abortController) {
           session.abortController.abort();
         }
@@ -102,8 +87,6 @@ export const usePlaybackStore = create<PlaybackState & PlaybackActions>()(
         set({
           session: {
             abortController,
-            sentenceId,
-            chapterIndex,
             isPaused: false
           }
         });
@@ -120,10 +103,6 @@ export const usePlaybackStore = create<PlaybackState & PlaybackActions>()(
 
       setPaused: (isPaused) => set((state) => ({
         session: { ...state.session, isPaused }
-      })),
-
-      updateSessionSentence: (sentenceId) => set((state) => ({
-        session: { ...state.session, sentenceId }
       }))
     }),
     {
@@ -136,9 +115,11 @@ export const usePlaybackStore = create<PlaybackState & PlaybackActions>()(
         enableASR: state.enableASR,
         enableIndexedDBStorage: state.enableIndexedDBStorage,
         enableLazyVoiceLoading: state.enableLazyVoiceLoading,
-        enableAudioCaching: state.enableAudioCaching,
-        enableStreamingTTS: state.enableStreamingTTS
-      })
+        enableAudioCaching: state.enableAudioCaching
+      }),
+      onRehydrateStorage: () => (state) => {
+        if (state) state._hasHydrated = true;
+      }
     }
   )
 );

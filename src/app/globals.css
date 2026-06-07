@@ -338,39 +338,12 @@ body {
   outline-offset: 1px;
 }
 
-/* Word highlight animation - no transform to avoid layout shift */
-@keyframes wordHighlight {
-  0% {
-    background-color: transparent;
-  }
-
-  100% {
-    background-color: var(--highlight-word);
-  }
-}
-
-.word.speaking {
-  animation: wordHighlight 0.15s ease-out forwards;
-}
-
 /* ASR-accurate word highlighting - teal/emerald color indicates precise timestamps */
 .sentence.active .word.speaking.asr-accurate {
   background-color: var(--highlight-word-asr);
   outline-color: var(--highlight-word-asr);
 }
 
-.word.speaking.asr-accurate {
-  animation: wordHighlightASR 0.15s ease-out forwards;
-}
-
-@keyframes wordHighlightASR {
-  0% {
-    background-color: transparent;
-  }
-  100% {
-    background-color: var(--highlight-word-asr);
-  }
-}
 
 /* Page Texture Overlay */
 .paper-texture {

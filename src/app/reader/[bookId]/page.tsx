@@ -8,7 +8,7 @@ import { useNavigationStore } from '@/store/navigationStore';
 import { usePlaybackStore } from '@/store/playbackStore';
 import { useUIStore } from '@/store/uiStore';
 import { useTTSStore } from '@/store/ttsStore';
-import { getBookStorage } from '@/lib/storage';
+import { getBookStorage } from '@/lib/storage/bookStorage';
 import { useSentenceStateStore, subscribeToHighlight, setHighlight, Highlight, getAudioPosition, setCumulativeTime } from '@/store/sentenceStateStore';
 import { useLibraryStore } from '@/store/libraryStore';
 import { useReadingProgressStore } from '@/store/readingProgressStore';
@@ -19,12 +19,21 @@ import { useAutoScroll } from '@/hooks/useAutoScroll';
 import { useMediaSession } from '@/hooks/useMediaSession';
 import { useBookSearch } from '@/hooks/useBookSearch';
 import { useTimeEstimation } from '@/hooks/useTimeEstimation';
+import dynamic from 'next/dynamic';
 import { VirtualizedSentenceList } from '@/components/VirtualizedSentenceList';
 import { Timeline } from '@/components/Timeline';
 import { PlaybackControls } from '@/components/PlaybackControls';
-import { SettingsSheet } from '@/components/SettingsSheet';
-import { SearchPanel } from '@/components/SearchPanel';
 import { PageIndicator } from '@/components/PageIndicator';
+
+// Lazy-load heavy overlay components - only rendered when opened
+const SettingsSheet = dynamic(
+  () => import('@/components/SettingsSheet').then(mod => ({ default: mod.SettingsSheet })),
+  { ssr: false }
+);
+const SearchPanel = dynamic(
+  () => import('@/components/SearchPanel').then(mod => ({ default: mod.SearchPanel })),
+  { ssr: false }
+);
 
 // Icons
 const BackIcon = () => (
@@ -147,7 +156,7 @@ export default function ReaderPage() {
     };
   }, []);
 
-  const { updateLastRead } = useLibraryStore();
+  const updateLastRead = useLibraryStore(state => state.updateLastRead);
 
   // Book search
   const {
@@ -416,11 +425,8 @@ export default function ReaderPage() {
     }
   }, [currentChapterIndex]);
 
-  // Handle sentence click - starts playback from clicked sentence
-  // skipToSentence handles ALL state updates and playback to avoid race conditions
-  const handleSentenceClick = useCallback((sentenceIndex: number) => {
-    skipToSentence(sentenceIndex);
-  }, [skipToSentence]);
+  // Handle sentence click - skipToSentence handles ALL state updates and playback
+  const handleSentenceClick = skipToSentence;
 
   // Handle play/pause
   const handlePlayPause = useCallback(() => {
@@ -433,24 +439,11 @@ export default function ReaderPage() {
     audioPlayPause();
   }, [isPlaying, currentChapter, currentSentenceIndex, setHighlight, audioPlayPause]);
 
-  // Handle previous/next sentence
-  const handlePrevSentence = useCallback(() => {
-    prevSentence();
-  }, [prevSentence]);
-
-  const handleNextSentence = useCallback(() => {
-    nextSentence();
-  }, [nextSentence]);
-
-  // Handle chapter selection from settings
-  const handleChapterSelect = useCallback((index: number) => {
-    handleChapterChange(index);
-  }, [handleChapterChange]);
-
-  // Handle timeline seek - same as sentence click
-  const handleTimelineSeek = useCallback((index: number) => {
-    skipToSentence(index);
-  }, [skipToSentence]);
+  // Direct references - no wrapper needed since these are already stable
+  const handlePrevSentence = prevSentence;
+  const handleNextSentence = nextSentence;
+  const handleChapterSelect = handleChapterChange;
+  const handleTimelineSeek = skipToSentence;
 
   // Handle next chapter at end
   const handleNextChapter = useCallback(() => {
@@ -634,12 +627,10 @@ export default function ReaderPage() {
               {/* Sentences */}
               <VirtualizedSentenceList
                 sentences={currentChapter.sentences}
-                currentIndex={currentSentenceIndex}
                 highlightedSentenceId={highlight.sentenceId}
                 highlightedWordIndex={highlight.wordIndex}
                 highlightTimestampSource={highlight.timestampSource}
                 onSentenceClick={handleSentenceClick}
-                isPlaying={isPlaying}
               />
 
               {/* End of Chapter */}
@@ -676,7 +667,6 @@ export default function ReaderPage() {
             onSeek={handleTimelineSeek}
             estimatedDuration={estimatedDuration}
             currentTime={displayTime}
-            enableASR={enableASR}
             bookProgress={bookProgress}
             timeEstimate={timeEstimate}
             isPlaying={isPlaying}

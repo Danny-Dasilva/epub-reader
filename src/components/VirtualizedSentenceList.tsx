@@ -2,18 +2,25 @@
 
 import { useCallback, useMemo, ReactNode } from 'react';
 import { Virtuoso } from 'react-virtuoso';
-import { Sentence, BlockType } from '@/lib/epub';
+import { Sentence, BlockType } from '@/lib/epub/types';
 import { TimestampSource, useSentenceStateStore } from '@/store/sentenceStateStore';
 import { SentenceSpan } from './SentenceSpan';
 
+// Hoisted outside component to avoid recreating on every render
+const virtuosoComponents = {
+  List: ({ children, ...props }: React.HTMLAttributes<HTMLDivElement> & { children?: React.ReactNode }) => (
+    <div {...props} className="leading-relaxed prose-blocks">
+      {children}
+    </div>
+  )
+};
+
 interface VirtualizedSentenceListProps {
   sentences: Sentence[];
-  currentIndex: number;
   highlightedSentenceId: string | null;
   highlightedWordIndex: number | null;
   highlightTimestampSource: TimestampSource | null;
   onSentenceClick: (index: number) => void;
-  isPlaying: boolean;
 }
 
 interface SentenceBlock {
@@ -220,13 +227,7 @@ export function VirtualizedSentenceList({
       overscan={2}
       computeItemKey={computeItemKey}
       itemContent={itemContent}
-      components={{
-        List: ({ children, ...props }) => (
-          <div {...props} className="leading-relaxed prose-blocks">
-            {children}
-          </div>
-        )
-      }}
+      components={virtuosoComponents}
     />
   );
 }

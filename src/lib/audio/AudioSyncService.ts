@@ -10,9 +10,9 @@
  */
 
 import { Sentence } from '../epub/types';
-import { TTSWorkerManager, getSharedTTSWorkerManager } from '../tts/TTSWorkerManager';
+import { TTSWorkerManager, getTTSWorkerManager } from '../tts/TTSWorkerManager';
 import { PreloadQueueManager, PreloadStateCallback } from './PreloadQueueManager';
-import { AudioPlayer, getSharedAudioPlayer } from './AudioPlayer';
+import { AudioPlayer, getSharedAudioPlayer, disposeSharedAudioPlayer } from './AudioPlayer';
 import { SentenceAudio, PlaybackEvent, PlaybackEventHandler } from './types';
 import { WordTimestamp } from '../asr/types';
 import { SentenceAudioState } from '@/store/sentenceStateStore';
@@ -41,6 +41,7 @@ export class AudioSyncService {
   private isInitialized = false;
   private isInitializing = false;
   private eventHandlers: Set<PlaybackEventHandler> = new Set();
+  private playerUnsubscribe: (() => void) | null = null;  // removes only THIS service's player forwarder
   private stateCallback: PreloadStateCallback | null = null;
   private backend: 'webgpu' | 'wasm' | null = null;
 
@@ -53,7 +54,7 @@ export class AudioSyncService {
       ...config
     };
 
-    this.ttsManager = getSharedTTSWorkerManager();
+    this.ttsManager = getTTSWorkerManager();
     this.preloadManager = new PreloadQueueManager(this.ttsManager, {
       preloadCount: this.config.preloadCount || 4,
       preloadCharLimit: this.config.preloadCharLimit || 800,
@@ -61,6 +62,19 @@ export class AudioSyncService {
       totalSteps: this.config.totalSteps || 5
     });
     this.player = getSharedAudioPlayer();
+
+    // Register the player→service event forwarder SYNCHRONOUSLY here, not inside the
+    // async initialize(). Registering in initialize() races with dispose() during
+    // React StrictMode (mount→cleanup→mount): the forwarder can register AFTER its
+    // own dispose() ran, leaving TWO forwarders on the shared singleton player — every
+    // playback event then fires twice, causing erratic navigation / repeated preload
+    // and preventing any sentence from actually playing. One forwarder per service,
+    // removed deterministically in dispose().
+    this.playerUnsubscribe = this.player.addEventListener((event) => {
+      for (const handler of this.eventHandlers) {
+        handler(event);
+      }
+    });
   }
 
   /**
@@ -103,10 +117,7 @@ export class AudioSyncService {
       // NOTE: AudioContext is NOT created here to avoid browser autoplay policy errors.
       // It will be lazily initialized on first playSentence() call (after user gesture).
 
-      // Forward player events
-      this.player.addEventListener((event) => {
-        this.eventHandlers.forEach(handler => handler(event));
-      });
+      // (Player event forwarder is registered synchronously in the constructor.)
 
       progressCallback?.('ready', 100, 'Ready');
       this.isInitialized = true;
@@ -162,9 +173,12 @@ export class AudioSyncService {
 
   /**
    * Play a sentence using streaming TTS (if enabled and not cached)
-   * Falls back to regular playback if streaming is disabled or audio is cached
+   * Falls back to regular playback if audio is cached or AudioWorklet unsupported
+   * @param sentence - The sentence to play
+   * @param signal - Optional abort signal
+   * @param explicitPlaybackRate - Optional explicit playback rate (avoids race with async React effects)
    */
-  async playSentenceStreaming(sentence: Sentence, enableStreaming: boolean, signal?: AbortSignal): Promise<void> {
+  async playSentenceStreaming(sentence: Sentence, signal?: AbortSignal, explicitPlaybackRate?: number): Promise<void> {
     // Ensure AudioContext is set on first play
     if (!this.preloadManager.hasAudioContext()) {
       this.preloadManager.setAudioContext(await this.player.getAudioContext());
@@ -175,18 +189,15 @@ export class AudioSyncService {
     if (cachedAudio) {
       // Audio is cached, use regular (non-streaming) playback for instant start
       this.stateCallback?.(sentence.id, 'playing');
+      if (explicitPlaybackRate !== undefined) {
+        this.player.setPlaybackRate(explicitPlaybackRate);
+      }
       await this.player.playSentence(cachedAudio);
       this.prepareNextSentenceAudio();
       return;
     }
 
-    // Audio not cached - use streaming if enabled and supported
-    if (!enableStreaming) {
-      // Streaming disabled, fall back to regular synthesis + playback
-      await this.playSentence(sentence, signal);
-      return;
-    }
-
+    // Audio not cached - use streaming if supported
     // Check if AudioWorklet is supported (required for streaming)
     const audioWorkletSupported = this.player.isAudioWorkletSupported();
     if (!audioWorkletSupported) {
@@ -195,12 +206,25 @@ export class AudioSyncService {
       return;
     }
 
+    // FIX #4: Stop current audio IMMEDIATELY before async TTS work
+    // This prevents old audio from continuing during predictDuration (~50ms) and streaming setup
+    // Without this, the delay makes clicking a non-cached sentence appear to be ignored
+    // Use stopForTransition() to avoid emitting 'stop' event which corrupts playback state
+    this.player.stopForTransition();
+
     // Start streaming playback
     this.stateCallback?.(sentence.id, 'playing');
 
     try {
-      // Generate estimated word timestamps for word highlighting
-      const wordTimestamps = this.generateEstimatedTimestamps(sentence.text, this.config.speed || 1.0);
+      // Predict duration and get accurate word timestamps before streaming starts
+      // This adds a small latency (~50ms) but provides much more accurate word highlighting
+      const durationResult = await this.ttsManager.predictDuration(
+        sentence.text,
+        {
+          speed: this.config.speed || 1.0,
+          preprocessedText: sentence.preprocessedText
+        }
+      );
 
       // Create SentenceAudio object for tracking (some fields not used in streaming mode)
       const sentenceAudio: SentenceAudio = {
@@ -208,13 +232,14 @@ export class AudioSyncService {
         text: sentence.text,
         rawPcm: new Float32Array(0),  // Not used for streaming
         sampleRate: 44100,  // Not used for streaming
-        wordTimestamps,
-        duration: 0,  // Will be calculated when streaming ends
-        timestampSource: 'estimated',
+        wordTimestamps: durationResult.wordTimestamps,  // TTS-predicted timestamps (~25ms accuracy)
+        duration: durationResult.duration,
+        timestampSource: 'tts',
       };
 
       // Initialize streaming worklet with sentence data for word tracking
-      const worklet = await this.player.startStreamingPlayback(sentenceAudio);
+      // Pass explicit playback rate to avoid race with async React effects
+      const worklet = await this.player.startStreamingPlayback(sentenceAudio, explicitPlaybackRate);
 
       // Start streaming synthesis
       await this.ttsManager.synthesizeStreaming(
@@ -243,12 +268,14 @@ export class AudioSyncService {
         if (this.preloadManager.isReady(sentence.id)) {
           this.stateCallback?.(sentence.id, 'ready');
         }
+        throw error;  // Re-throw abort errors
       } else {
         // Streaming failed, try falling back to regular synthesis
         console.warn('[AudioSyncService] Streaming failed, falling back to regular synthesis:', error);
         await this.playSentence(sentence, signal);
+        // Don't throw - fallback succeeded, playback continues normally
+        return;
       }
-      throw error;
     }
   }
 
@@ -305,6 +332,8 @@ export class AudioSyncService {
   // Store sentences array for gapless look-ahead
   private currentSentences: Sentence[] = [];
   private currentSentenceIndex: number = 0;
+  // js-index-maps: O(1) lookup for sentence position by ID
+  private sentenceIndexMap: Map<string, number> = new Map();
 
   /**
    * Play a sentence using gapless playback
@@ -321,7 +350,13 @@ export class AudioSyncService {
       this.preloadManager.setAudioContext(await this.player.getAudioContext());
     }
 
-    // Store for look-ahead callback
+    // Store for look-ahead callback; rebuild index map if sentences changed
+    if (this.currentSentences !== sentences) {
+      this.sentenceIndexMap.clear();
+      for (let i = 0; i < sentences.length; i++) {
+        this.sentenceIndexMap.set(sentences[i].id, i);
+      }
+    }
     this.currentSentences = sentences;
     this.currentSentenceIndex = currentIndex;
 
@@ -371,9 +406,9 @@ export class AudioSyncService {
    * Update current position for gapless playback (called on sentence transitions)
    */
   updateGaplessPosition(sentenceId: string): void {
-    const index = this.currentSentences.findIndex(s => s.id === sentenceId);
-    if (index !== -1) {
-      this.currentSentenceIndex = index;
+    const idx = this.sentenceIndexMap.get(sentenceId);
+    if (idx !== undefined) {
+      this.currentSentenceIndex = idx;
     }
   }
 
@@ -425,6 +460,18 @@ export class AudioSyncService {
       this.player.stopGapless();
     } else {
       this.player.stop();
+    }
+  }
+
+  /**
+   * Stop playback for sentence transition - does NOT emit 'stop' event
+   * Use this when transitioning between sentences to avoid corrupting playback state.
+   */
+  stopForTransition(): void {
+    if (this.player.isGaplessMode()) {
+      this.player.stopGapless();
+    } else {
+      this.player.stopForTransition();
     }
   }
 
@@ -626,9 +673,15 @@ export class AudioSyncService {
    * Dispose of resources
    */
   dispose(): void {
-    this.cancelAllOperations();
+    this.cancelAllOperations();  // stops the player (stop/stopGapless)
     this.preloadManager.dispose();
-    this.player.dispose();  // Closes AudioContext to release audio buffers
+    // Remove only THIS service's forwarder. Do NOT dispose the shared singleton
+    // player here — that would null its playerA/B, close its AudioContext, and
+    // clear handlers used by newer/concurrent services, silently killing event
+    // forwarding (word highlighting + auto-advance). Full teardown lives in
+    // disposeAudioSyncService().
+    this.playerUnsubscribe?.();
+    this.playerUnsubscribe = null;
     this.eventHandlers.clear();
     this.isInitialized = false;
   }
@@ -658,4 +711,6 @@ export function initializeAudioSyncService(config: AudioSyncConfig): AudioSyncSe
 export function disposeAudioSyncService(): void {
   sharedService?.dispose();
   sharedService = null;
+  // True app teardown: now fully dispose the shared player and reset its singleton.
+  disposeSharedAudioPlayer();
 }

@@ -1,7 +1,11 @@
 // Narrator Service Worker
-const CACHE_NAME = 'narrator-v1';
-const MODEL_CACHE_NAME = 'narrator-models-v1';
-const AUDIO_CACHE_NAME = 'narrator-audio-v1';
+// NOTE: bump these version suffixes whenever the TTS model or synthesis output
+// changes (model swap v3->v2, denoising-step change, tokenization change). The
+// activate handler purges caches not in the allowed set, so a bump re-fetches the
+// on-disk models and drops stale synthesized audio. (v2: Supertonic 2 + <lang> tokens.)
+const CACHE_NAME = 'narrator-v2';
+const MODEL_CACHE_NAME = 'narrator-models-v2';
+const AUDIO_CACHE_NAME = 'narrator-audio-v2';
 
 // Static assets to cache immediately
 const STATIC_ASSETS = [

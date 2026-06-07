@@ -68,7 +68,11 @@ export async function loadTextToSpeech(
 ): Promise<{ textToSpeech: TextToSpeech; cfgs: TTSConfig }> {
   console.log('Loading TTS models...');
 
-  const cfgs = await loadConfig(onnxDir);
+  // Load config and text processor in parallel (independent fetches)
+  const [cfgs, textProcessor] = await Promise.all([
+    loadConfig(onnxDir),
+    loadTextProcessor(onnxDir)
+  ]);
 
   const modelPaths = [
     { name: 'Duration Predictor', path: `${onnxDir}/duration_predictor.onnx` },
@@ -77,6 +81,7 @@ export async function loadTextToSpeech(
     { name: 'Vocoder', path: `${onnxDir}/vocoder.onnx` }
   ];
 
+  // Models must load sequentially for progress reporting
   const sessions: ort.InferenceSession[] = [];
   for (let i = 0; i < modelPaths.length; i++) {
     if (progressCallback) {
@@ -89,7 +94,6 @@ export async function loadTextToSpeech(
 
   const [dpOrt, textEncOrt, vectorEstOrt, vocoderOrt] = sessions;
 
-  const textProcessor = await loadTextProcessor(onnxDir);
   const textToSpeech = new TextToSpeech(
     cfgs,
     textProcessor,

@@ -26,16 +26,19 @@ export function useLastReadBook(): BookWithProgress | null {
   const currentBook = useNavigationStore(state => state.currentBook);
 
   const lastReadBook = useMemo(() => {
-    // Filter out books that have never been read (lastReadAt = 0 or undefined)
-    const readBooks = books.filter(book => book.lastReadAt && book.lastReadAt > 0);
-
-    if (readBooks.length === 0) {
-      return null;
+    // Single pass: find the most recently read book (O(n) instead of filter+sort)
+    let mostRecent: typeof books[0] | null = null;
+    for (const book of books) {
+      if (book.lastReadAt && book.lastReadAt > 0) {
+        if (!mostRecent || book.lastReadAt > mostRecent.lastReadAt) {
+          mostRecent = book;
+        }
+      }
     }
 
-    // Sort by lastReadAt in descending order to get most recent
-    const sorted = [...readBooks].sort((a, b) => b.lastReadAt - a.lastReadAt);
-    const mostRecent = sorted[0];
+    if (!mostRecent) {
+      return null;
+    }
 
     // Get reading progress for this book
     const savedProgress = getProgress(mostRecent.id);

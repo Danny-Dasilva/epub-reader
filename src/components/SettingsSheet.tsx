@@ -44,8 +44,43 @@ const VolumeIcon = ({ muted }: { muted?: boolean }) => (
   </svg>
 );
 
+// Reusable toggle row to avoid repeating the switch pattern
+function ToggleRow({
+  label,
+  description,
+  checked,
+  onChange,
+}: {
+  label: string;
+  description?: string;
+  checked: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <div className="settings-row justify-between">
+      <div>
+        <span className="text-sm text-[var(--text-muted)]">{label}</span>
+        {description && (
+          <p className="text-xs text-[var(--text-muted)] opacity-70 mt-0.5">
+            {description}
+          </p>
+        )}
+      </div>
+      <button
+        className={`toggle-switch ${checked ? 'active' : ''}`}
+        onClick={() => onChange(!checked)}
+        role="switch"
+        aria-checked={checked}
+      >
+        <span className="toggle-switch-thumb" />
+      </button>
+    </div>
+  );
+}
+
 const SPEECH_RATE_PRESETS = [0.9, 1.0, 1.1, 1.25, 1.5] as const;
 const PLAYBACK_RATE_PRESETS = [0.75, 1.0, 1.25, 1.5, 2.0] as const;
+const SCROLL_POSITIONS = ['top', 'center'] as const;
 
 export const SettingsSheet = memo(function SettingsSheet({
   isOpen,
@@ -154,21 +189,15 @@ export const SettingsSheet = memo(function SettingsSheet({
           {/* Auto-Scroll */}
           <div className="settings-section">
             <h3 className="settings-section-title">Auto-Scroll</h3>
-            <div className="settings-row justify-between">
-              <span className="text-sm text-[var(--text-muted)]">Follow current sentence</span>
-              <button
-                className={`toggle-switch ${autoScroll ? 'active' : ''}`}
-                onClick={() => setAutoScroll(!autoScroll)}
-                role="switch"
-                aria-checked={autoScroll}
-              >
-                <span className="toggle-switch-thumb" />
-              </button>
-            </div>
+            <ToggleRow
+              label="Follow current sentence"
+              checked={autoScroll}
+              onChange={setAutoScroll}
+            />
             {autoScroll && (
               <div className="settings-row mt-2">
                 <span className="text-xs text-[var(--text-muted)] mr-3">Position:</span>
-                {(['top', 'center'] as const).map((pos) => (
+                {SCROLL_POSITIONS.map((pos) => (
                   <button
                     key={pos}
                     className={`settings-pill ${scrollPosition === pos ? 'active' : ''}`}
@@ -184,43 +213,23 @@ export const SettingsSheet = memo(function SettingsSheet({
           {/* Background Playback */}
           <div className="settings-section">
             <h3 className="settings-section-title">Background Playback</h3>
-            <div className="settings-row justify-between">
-              <div>
-                <span className="text-sm text-[var(--text-muted)]">Continue when tab hidden</span>
-                <p className="text-xs text-[var(--text-muted)] opacity-70 mt-0.5">
-                  Enables lock screen controls
-                </p>
-              </div>
-              <button
-                className={`toggle-switch ${allowBackgroundPlayback ? 'active' : ''}`}
-                onClick={() => setAllowBackgroundPlayback(!allowBackgroundPlayback)}
-                role="switch"
-                aria-checked={allowBackgroundPlayback}
-              >
-                <span className="toggle-switch-thumb" />
-              </button>
-            </div>
+            <ToggleRow
+              label="Continue when tab hidden"
+              description="Enables lock screen controls"
+              checked={allowBackgroundPlayback}
+              onChange={setAllowBackgroundPlayback}
+            />
           </div>
 
           {/* Word Timestamp Refinement (ASR) */}
           <div className="settings-section">
             <h3 className="settings-section-title">Word Highlighting</h3>
-            <div className="settings-row justify-between">
-              <div>
-                <span className="text-sm text-[var(--text-muted)]">Precise word timing (ASR)</span>
-                <p className="text-xs text-[var(--text-muted)] opacity-70 mt-0.5">
-                  Downloads ~50MB model for accurate highlighting
-                </p>
-              </div>
-              <button
-                className={`toggle-switch ${enableASR ? 'active' : ''}`}
-                onClick={() => setEnableASR(!enableASR)}
-                role="switch"
-                aria-checked={enableASR}
-              >
-                <span className="toggle-switch-thumb" />
-              </button>
-            </div>
+            <ToggleRow
+              label="Precise word timing (ASR)"
+              description="Downloads ~50MB model for accurate highlighting"
+              checked={enableASR}
+              onChange={setEnableASR}
+            />
           </div>
 
           {/* Volume */}

@@ -13,7 +13,6 @@ interface TimelineProps {
   onSeek: (index: number) => void;
   estimatedDuration?: number; // in seconds
   currentTime?: number; // in seconds
-  enableASR?: boolean;  // Whether ASR is enabled (hides STT stat when false)
   bookProgress?: number; // 0-100 percentage of book completion
   timeEstimate?: TimeEstimate; // Time estimation data
   isPlaying?: boolean; // Whether playback is active
@@ -55,6 +54,40 @@ function getSegmentColor(
   return SEGMENT_COLORS.pending;
 }
 
+/** Extracted memoized tooltip to avoid IIFE in render */
+const TimelineTooltip = memo(function TimelineTooltip({
+  hoveredIndex,
+  totalSentences,
+  getSentenceStateInfo,
+}: {
+  hoveredIndex: number;
+  totalSentences: number;
+  getSentenceStateInfo: (index: number) => { color: string; label: string } | null;
+}) {
+  const stateInfo = getSentenceStateInfo(hoveredIndex);
+  return (
+    <div
+      className="timeline-tooltip"
+      style={{
+        left: `${((hoveredIndex + 0.5) / totalSentences) * 100}%`,
+        transform: 'translateX(-50%)'
+      }}
+    >
+      <div className="tooltip-content">
+        {stateInfo ? (
+          <span
+            className="tooltip-state-dot"
+            style={{ background: stateInfo.color }}
+          />
+        ) : null}
+        <span className="tooltip-label">{stateInfo?.label ?? 'Sentence'}</span>
+        <span className="tooltip-separator">•</span>
+        <span className="tooltip-value">{hoveredIndex + 1} / {totalSentences}</span>
+      </div>
+    </div>
+  );
+});
+
 export const Timeline = memo(function Timeline({
   totalSentences,
   currentIndex,
@@ -63,7 +96,6 @@ export const Timeline = memo(function Timeline({
   onSeek,
   estimatedDuration = 0,
   currentTime = 0,
-  enableASR = false,
   bookProgress = 0,
   timeEstimate,
   isPlaying = false
@@ -75,38 +107,33 @@ export const Timeline = memo(function Timeline({
   const trackRef = useRef<HTMLDivElement>(null);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
-  // Calculate preload progress - count sentences that are ready, preloading, played, or playing
-  const preloadStats = useMemo(() => {
+  // Combined iteration: count preloaded and ASR sentences in a single pass
+  const { preloadStats, asrStats } = useMemo(() => {
     let preloadedCount = 0;
+    let asrCount = 0;
 
-    sentenceIds.forEach((id) => {
+    for (const id of sentenceIds) {
       const state = sentenceStates[id];
-      // Only count sentences with COMPLETED TTS generation (not 'preloading' which is just queued)
       if (state === 'ready' || state === 'playing' || state === 'played') {
         preloadedCount++;
       }
-    });
+      if (asrCompletedIds.has(id)) {
+        asrCount++;
+      }
+    }
 
     const preloadPercentage = totalSentences > 0 ? (preloadedCount / totalSentences) * 100 : 0;
+    const asrPercentage = totalSentences > 0 ? (asrCount / totalSentences) * 100 : 0;
 
-    return { preloadedCount, preloadPercentage };
-  }, [sentenceStates, sentenceIds, totalSentences]);
+    return {
+      preloadStats: { preloadedCount, preloadPercentage },
+      asrStats: { asrCount, asrPercentage }
+    };
+  }, [sentenceStates, sentenceIds, asrCompletedIds, totalSentences]);
 
   // Position-based played count - all sentences before currentIndex are considered "played"
   const playedCount = currentIndex;
   const playedPercentage = totalSentences > 0 ? (playedCount / totalSentences) * 100 : 0;
-
-  // Calculate ASR progress - sentences with refined word timestamps
-  const asrStats = useMemo(() => {
-    let asrCount = 0;
-    sentenceIds.forEach((id) => {
-      if (asrCompletedIds.has(id)) {
-        asrCount++;
-      }
-    });
-    const asrPercentage = totalSentences > 0 ? (asrCount / totalSentences) * 100 : 0;
-    return { asrCount, asrPercentage };
-  }, [asrCompletedIds, sentenceIds, totalSentences]);
 
   // Get state info for a sentence (used for tooltip state indicator)
   const getSentenceStateInfo = useCallback((index: number): { color: string; label: string } | null => {
@@ -207,39 +234,22 @@ export const Timeline = memo(function Timeline({
           style={{ background: gradientBackground }}
         >
           {/* Current sentence marker */}
-          {totalSentences > 0 && (
+          {totalSentences > 0 ? (
             <div
               className="timeline-gradient-marker"
               style={{ left: `${markerPosition}%` }}
             />
-          )}
+          ) : null}
         </div>
       </div>
 
-      {hoveredIndex !== null && (() => {
-        const stateInfo = getSentenceStateInfo(hoveredIndex);
-        return (
-          <div
-            className="timeline-tooltip"
-            style={{
-              left: `${((hoveredIndex + 0.5) / totalSentences) * 100}%`,
-              transform: 'translateX(-50%)'
-            }}
-          >
-            <div className="tooltip-content">
-              {stateInfo && (
-                <span
-                  className="tooltip-state-dot"
-                  style={{ background: stateInfo.color }}
-                />
-              )}
-              <span className="tooltip-label">{stateInfo?.label ?? 'Sentence'}</span>
-              <span className="tooltip-separator">•</span>
-              <span className="tooltip-value">{hoveredIndex + 1} / {totalSentences}</span>
-            </div>
-          </div>
-        );
-      })()}
+      {hoveredIndex !== null ? (
+        <TimelineTooltip
+          hoveredIndex={hoveredIndex}
+          totalSentences={totalSentences}
+          getSentenceStateInfo={getSentenceStateInfo}
+        />
+      ) : null}
 
       <TimelineStats
         playedCount={playedCount}
@@ -247,9 +257,8 @@ export const Timeline = memo(function Timeline({
         playedPercentage={playedPercentage}
         preloadedCount={preloadStats.preloadedCount}
         preloadPercentage={preloadStats.preloadPercentage}
-        asrCount={asrStats.asrCount}
-        asrPercentage={asrStats.asrPercentage}
-        enableASR={enableASR}
+        asrCount={asrStats.asrCount > 0 ? asrStats.asrCount : undefined}
+        asrPercentage={asrStats.asrCount > 0 ? asrStats.asrPercentage : undefined}
         bookProgress={bookProgress}
         currentTime={currentTime}
         estimatedDuration={estimatedDuration}

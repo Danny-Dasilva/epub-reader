@@ -19,6 +19,11 @@ interface PlaybackControlsProps {
 }
 
 const SPEEDS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+const SPEEDS_REVERSED = [...SPEEDS].reverse();
+
+const formatSpeed = (speed: number) => {
+  return speed === 1 ? '1x' : `${speed}x`;
+};
 
 // Icons
 const PlayIcon = () => (
@@ -115,10 +120,6 @@ export const PlaybackControls = memo(function PlaybackControls({
     setShowSpeedPopup(false);
   }, [onSpeedChange]);
 
-  const formatSpeed = (speed: number) => {
-    return speed === 1 ? '1x' : `${speed}x`;
-  };
-
   return (
     <div className="playback-controls">
       {/* Speed button with popup */}
@@ -126,7 +127,7 @@ export const PlaybackControls = memo(function PlaybackControls({
         <button
           ref={speedBtnRef}
           className="playback-btn speed-btn"
-          onClick={() => setShowSpeedPopup(!showSpeedPopup)}
+          onClick={() => setShowSpeedPopup(prev => !prev)}
           title={`Speed: ${formatSpeed(playbackSpeed)}`}
         >
           {formatSpeed(playbackSpeed)}
@@ -135,7 +136,7 @@ export const PlaybackControls = memo(function PlaybackControls({
         {/* Speed Popup */}
         {showSpeedPopup && (
           <div ref={popupRef} className="speed-popup">
-            {SPEEDS.slice().reverse().map((speed) => (
+            {SPEEDS_REVERSED.map((speed) => (
               <button
                 key={speed}
                 className={`speed-popup-option ${playbackSpeed === speed ? 'active' : ''}`}

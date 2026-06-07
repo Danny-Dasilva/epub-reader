@@ -1,5 +1,8 @@
 import { ParsedBook } from './types';
 
+// Hoisted regex - countWords is called per sentence in calculatePagination loop
+const WHITESPACE_SPLIT_PATTERN = /\s+/;
+
 /**
  * Page information for a specific location
  */
@@ -38,7 +41,7 @@ const DEFAULT_WORDS_PER_PAGE = 250;
  * Count words in a text string
  */
 function countWords(text: string): number {
-  return text.trim().split(/\s+/).filter(word => word.length > 0).length;
+  return text.trim().split(WHITESPACE_SPLIT_PATTERN).filter(word => word.length > 0).length;
 }
 
 /**

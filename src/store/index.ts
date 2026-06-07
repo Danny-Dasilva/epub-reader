@@ -5,3 +5,5 @@ export { useUIStore, type Theme } from './uiStore';
 export { useTTSStore } from './ttsStore';
 export { useSentenceStateStore, type SentenceAudioState, type SentenceStateMap } from './sentenceStateStore';
 export { useLibraryStore } from './libraryStore';
+export { useReadingProgressStore, type BookProgress } from './readingProgressStore';
+export { useSleepTimerStore, type SleepTimerPreset } from './sleepTimerStore';

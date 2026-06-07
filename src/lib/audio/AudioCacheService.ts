@@ -118,11 +118,7 @@ class AudioCacheService {
         audioBlob: audioBlob,
       });
 
-      if (result?.success) {
-        return true;
-      }
-
-      return false;
+      return result?.success === true;
     } catch (error) {
       console.error('[AudioCache] Failed to cache audio:', error);
       return false;

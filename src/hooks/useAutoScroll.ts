@@ -24,12 +24,18 @@ export function useAutoScroll({
 }: UseAutoScrollOptions) {
   const autoScroll = useUIStore((state) => state.autoScroll);
   const scrollPosition = useUIStore((state) => state.scrollPosition);
-  const setAutoScroll = useUIStore((state) => state.setAutoScroll);
 
   // Track if user has manually scrolled (temporarily disables auto-scroll)
   const userScrolledRef = useRef(false);
   const lastSentenceIndexRef = useRef<number | null>(null);
   const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Use refs for transient values read in the scroll handler
+  // to avoid re-registering the scroll listener on every state change
+  const isPlayingRef = useRef(isPlaying);
+  isPlayingRef.current = isPlaying;
+  const autoScrollRef = useRef(autoScroll);
+  autoScrollRef.current = autoScroll;
 
   // Scroll to a sentence element
   const scrollToSentence = useCallback((index: number, position: ScrollPosition) => {
@@ -43,7 +49,7 @@ export function useAutoScroll({
     }
   }, []);
 
-  // Handle manual scroll detection
+  // Handle manual scroll detection - registered once, reads from refs
   useEffect(() => {
     const container = containerRef?.current || window;
 
@@ -54,7 +60,7 @@ export function useAutoScroll({
       }
 
       // User manually scrolled - temporarily disable auto-scroll
-      if (isPlaying && autoScroll) {
+      if (isPlayingRef.current && autoScrollRef.current) {
         userScrolledRef.current = true;
       }
     };
@@ -63,7 +69,7 @@ export function useAutoScroll({
     return () => {
       container.removeEventListener('scroll', handleScroll);
     };
-  }, [containerRef, isPlaying, autoScroll]);
+  }, [containerRef]);  // Only re-register when container changes
 
   // Re-enable auto-scroll when playback resumes from pause
   useEffect(() => {

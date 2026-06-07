@@ -2,6 +2,10 @@ import * as ort from 'onnxruntime-web';
 import { UnicodeProcessor } from './UnicodeProcessor';
 import { TTSConfig, TTSResult, Style } from './types';
 
+// Hoisted: complex regex patterns (avoid re-creation per call)
+const PARAGRAPH_SPLIT_PATTERN = /\n\s*\n+/;
+const SENTENCE_SPLIT_PATTERN = /(?<!Mr\.|Mrs\.|Ms\.|Dr\.|Prof\.|Sr\.|Jr\.|Ph\.D\.|etc\.|e\.g\.|i\.e\.|vs\.|Inc\.|Ltd\.|Co\.|Corp\.|St\.|Ave\.|Blvd\.)(?<!\b[A-Z]\.)(?<=[.!?])\s+/;
+
 /**
  * Chunk text into manageable segments
  */
@@ -11,7 +15,7 @@ export function chunkText(text: string, maxLen: number = 300): string[] {
   }
 
   // Split by paragraph (two or more newlines)
-  const paragraphs = text.trim().split(/\n\s*\n+/).filter(p => p.trim());
+  const paragraphs = text.trim().split(PARAGRAPH_SPLIT_PATTERN).filter(p => p.trim());
 
   const chunks: string[] = [];
 
@@ -21,7 +25,7 @@ export function chunkText(text: string, maxLen: number = 300): string[] {
 
     // Split by sentence boundaries (period, question mark, exclamation mark followed by space)
     // But exclude common abbreviations like Mr., Mrs., Dr., etc.
-    const sentences = paragraph.split(/(?<!Mr\.|Mrs\.|Ms\.|Dr\.|Prof\.|Sr\.|Jr\.|Ph\.D\.|etc\.|e\.g\.|i\.e\.|vs\.|Inc\.|Ltd\.|Co\.|Corp\.|St\.|Ave\.|Blvd\.)(?<!\b[A-Z]\.)(?<=[.!?])\s+/);
+    const sentences = paragraph.split(SENTENCE_SPLIT_PATTERN);
 
     let currentChunk = "";
 

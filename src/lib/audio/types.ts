@@ -14,7 +14,7 @@ export interface SentenceAudio {
   blobUrl?: string;           // WAV blob URL for HTMLAudioElement - created lazily for speed
   wordTimestamps: WordTimestamp[];
   duration: number;
-  timestampSource: 'estimated' | 'asr';  // Track whether timestamps are estimated or ASR-verified
+  timestampSource: 'estimated' | 'asr' | 'tts';  // Track timestamp source: estimated (char-weighted), asr (transcription), tts (model-predicted)
 }
 
 /**
@@ -54,7 +54,7 @@ export interface PlaybackEvent {
   wordIndex?: number;
   currentTime?: number;
   duration?: number;  // Audio file duration (for sentenceEnd events)
-  timestampSource?: 'estimated' | 'asr';  // Track if using accurate ASR timestamps
+  timestampSource?: 'estimated' | 'asr' | 'tts';  // Track timestamp source
   error?: Error;
 }
 

@@ -60,6 +60,10 @@ export class PreloadQueueManager {
   private queuedIds = new Set<string>();
   private activeRequests: Map<string, QueuedRequest> = new Map();  // Track concurrent TTS operations
   private sessionController: AbortController | null = null;
+  // Identity of the sentence list the current full-chapter preload session was started for.
+  // Used to make preloadFullChapter idempotent: re-calling it for the SAME chapter must not
+  // cancel + re-queue (which aborts in-flight synthesis and starves the look-ahead cache).
+  private preloadSessionSentences: Sentence[] | null = null;
   private config: PreloadConfig;
   private stateCallback: PreloadStateCallback | null = null;
   private audioContext: AudioContext | null = null;
@@ -104,10 +108,10 @@ export class PreloadQueueManager {
       preloadCount: 4,
       preloadCharLimit: 800,
       speed: 1.0,
-      totalSteps: 5,
-      urgentSteps: 3,
+      totalSteps: 5,        // Supertonic 2 is clean at 5 steps (no clipping)
+      urgentSteps: 3,       // fast path for the current sentence; v2 doesn't clip at 3 (peak ~0.29)
       maxCacheSize: adaptiveCacheSize,
-      maxConcurrentTTS: 2,      // Process 2 batches concurrently
+      maxConcurrentTTS: 6,      // Process 6 batches concurrently for faster look-ahead refill
       batchCharLimit: 600,      // Smaller batches = less post-processing overhead
       singleSentenceLimit: 600, // More sentences skip batch splitting (processed individually)
       enableASR: false,         // Default disabled to save ~50MB Parakeet model download
@@ -222,15 +226,18 @@ export class PreloadQueueManager {
 
     // Link abort controllers to session (use once: true to prevent listener accumulation)
     this.sessionController.signal.addEventListener('abort', () => {
-      this.queue.toArray().forEach(req => req.abortController.abort());
-      // Abort all active concurrent requests
-      this.activeRequests.forEach(req => req.abortController.abort());
+      for (const req of this.queue.toArray()) {
+        req.abortController.abort();
+      }
+      for (const req of this.activeRequests.values()) {
+        req.abortController.abort();
+      }
     }, { once: true });
 
     // Mark all as preloading
-    toPreload.forEach(sentence => {
+    for (const sentence of toPreload) {
       this.stateCallback?.(sentence.id, 'preloading');
-    });
+    }
 
     // Start processing
     this.processQueue();
@@ -242,6 +249,7 @@ export class PreloadQueueManager {
   cancelSession(): void {
     this.sessionController?.abort();
     this.sessionController = null;
+    this.preloadSessionSentences = null;
     this.queue.clear();
     this.queuedIds.clear();  // Performance optimization #4
     // Abort and clear all active requests
@@ -292,6 +300,13 @@ export class PreloadQueueManager {
     // Collect consecutive short sentences
     while (this.queue.size > 0) {
       const next = this.queue.peek()!;
+
+      // Skip items that were removed from queuedIds (cancelled or prioritized)
+      if (!this.queuedIds.has(next.sentence.id)) {
+        this.queue.pop(); // Remove from heap
+        continue;
+      }
+
       const textLen = next.sentence.text.length;
 
       // Stop if sentence is too long to batch
@@ -498,10 +513,15 @@ export class PreloadQueueManager {
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) {
         console.error('Batch preload failed:', error);
-        batch.sentences.forEach(s => this.stateCallback?.(s.id, 'error'));
+        for (const s of batch.sentences) {
+          this.stateCallback?.(s.id, 'error');
+        }
       }
     } finally {
-      batch.sentences.forEach(s => this.activeRequests.delete(s.id));
+      for (const s of batch.sentences) {
+        this.activeRequests.delete(s.id);
+        this.queuedIds.delete(s.id);
+      }
       this.processQueue();
     }
   }
@@ -598,25 +618,22 @@ export class PreloadQueueManager {
     }
 
     while (this.cache.size >= this.config.maxCacheSize && this.accessOrder.size > 0) {
-      // Find oldest entry that is NOT protected - O(n) but only runs during eviction
       let toEvict: string | null = null;
       let oldestTime = Infinity;
 
       for (const [sentenceId, accessTime] of this.accessOrder) {
-        if (!protectedIds.has(sentenceId) && accessTime < oldestTime) {
+        if (protectedIds.has(sentenceId)) continue;
+        if (accessTime < oldestTime) {
           oldestTime = accessTime;
           toEvict = sentenceId;
         }
       }
 
-      // If all entries are protected, allow cache to grow temporarily
       if (toEvict === null) break;
 
       this.accessOrder.delete(toEvict);
       this.revokeBlob(toEvict);
       this.cache.delete(toEvict);
-      // Don't change state on eviction - keeps visual state as 'ready'
-      // When user reaches evicted sentence, prepareSentence will regenerate on-demand
     }
   }
 
@@ -655,7 +672,9 @@ export class PreloadQueueManager {
    * Revoke all tracked blob URLs
    */
   private revokeAllBlobs(): void {
-    this.blobUrls.forEach(url => URL.revokeObjectURL(url));
+    for (const url of this.blobUrls.values()) {
+      URL.revokeObjectURL(url);
+    }
     this.blobUrls.clear();
   }
 
@@ -668,9 +687,7 @@ export class PreloadQueueManager {
     result: TTSSynthesisResult
   ): Promise<SentenceAudio> {
     // Store raw PCM data - blob URL created lazily in getAudio() for faster preloading
-    // Estimate word timings with character-weighted distribution
-    const wordTimestamps = this.estimateWordTimings(sentence.text, result.duration);
-
+    // Use word timestamps from TTS heuristic (based on actual predicted duration)
     return {
       sentenceId: sentence.id,
       text: sentence.text,
@@ -678,9 +695,9 @@ export class PreloadQueueManager {
       sampleRate: result.sampleRate,
       wavBuffer: result.wavBuffer,  // Optimization #3: Pre-encoded WAV buffer from worker
       // blobUrl created lazily in getAudio() when needed for playback
-      wordTimestamps,
+      wordTimestamps: result.wordTimestamps,  // TTS-predicted timestamps (~25ms accuracy)
       duration: result.duration,
-      timestampSource: 'estimated' as const
+      timestampSource: 'tts' as const
     };
   }
 
@@ -845,19 +862,21 @@ export class PreloadQueueManager {
       }
     }
 
-    // If worker is busy with preload, cancel it to prioritize this sentence
-    // This ensures the user doesn't wait for background preload to complete
-    if (this.ttsManager.isBusy() || this.ttsManager.queueLength() > 0) {
-      console.log('[Preload] Cancelling preload to prioritize current sentence');
+    // If this specific sentence is already being processed, cancel it
+    // Otherwise, let it queue naturally - no need to nuke all preloads
+    const existingRequest = this.activeRequests.get(sentence.id);
+    if (existingRequest) {
+      console.log(`[Preload] Cancelling existing request for sentence ${sentence.id} to retry`);
+      existingRequest.abortController.abort();
+      this.activeRequests.delete(sentence.id);
+    }
 
-      // Cancel all queued and active TTS requests
-      this.ttsManager.cancelAll();
-
-      // Clear our internal queue and active requests
-      // Don't change state - preloadFullChapter will re-mark items as 'preloading' when it re-queues them
-      this.queue.clear();
-      this.queuedIds.clear();  // Performance optimization #4
-      this.activeRequests.clear();
+    // Remove from queue if it's waiting there
+    if (this.queuedIds.has(sentence.id)) {
+      console.log(`[Preload] Removing sentence ${sentence.id} from queue to prioritize`);
+      // Note: This leaves the item in the heap, but it will be skipped when dequeued
+      // since we remove it from queuedIds. This is acceptable overhead.
+      this.queuedIds.delete(sentence.id);
     }
 
     // Update state
@@ -975,7 +994,8 @@ export class PreloadQueueManager {
 
     // Add to queue with priorities based on current queue size and active requests
     const basePriority = this.queue.size + this.activeRequests.size;
-    toAdd.forEach((sentence, index) => {
+    for (let i = 0; i < toAdd.length; i++) {
+      const sentence = toAdd[i];
       const abortController = new AbortController();
 
       // Link to session abort (use once: true to prevent listener accumulation)
@@ -985,13 +1005,13 @@ export class PreloadQueueManager {
 
       this.queue.push({
         sentence,
-        priority: basePriority + index,
+        priority: basePriority + i,
         abortController
       });
-      this.queuedIds.add(sentence.id);  // Performance optimization #4
+      this.queuedIds.add(sentence.id);
 
       this.stateCallback?.(sentence.id, 'preloading');
-    });
+    }
 
     // Continue processing if not already
     this.processQueue();
@@ -1003,9 +1023,23 @@ export class PreloadQueueManager {
    * Cache eviction (LRU, maxCacheSize) still applies to bound memory
    */
   preloadFullChapter(sentences: Sentence[], startIndex: number): void {
-    // Cancel existing session
+    // Idempotent: if a preload session is already running for THIS chapter, leave it
+    // alone. The first call already queued the entire chapter, so in-flight synthesis
+    // keeps filling the look-ahead cache. Re-entering on every sentence advance and
+    // calling cancelSession() here was aborting the in-flight jobs and re-queueing from
+    // scratch each step, so generation could never get ahead of playback.
+    if (
+      this.sessionController &&
+      !this.sessionController.signal.aborted &&
+      this.preloadSessionSentences === sentences
+    ) {
+      return;
+    }
+
+    // Cancel existing session (different chapter, or no active session)
     this.cancelSession();
     this.sessionController = new AbortController();
+    this.preloadSessionSentences = sentences;
 
     // Queue ALL remaining sentences (no count/char limits)
     const toPreload: Sentence[] = [];
@@ -1033,15 +1067,18 @@ export class PreloadQueueManager {
 
     // Link abort controllers to session (use once: true to prevent listener accumulation)
     this.sessionController.signal.addEventListener('abort', () => {
-      this.queue.toArray().forEach(req => req.abortController.abort());
-      // Abort all active concurrent requests
-      this.activeRequests.forEach(req => req.abortController.abort());
+      for (const req of this.queue.toArray()) {
+        req.abortController.abort();
+      }
+      for (const req of this.activeRequests.values()) {
+        req.abortController.abort();
+      }
     }, { once: true });
 
     // Mark all as preloading
-    toPreload.forEach(sentence => {
+    for (const sentence of toPreload) {
       this.stateCallback?.(sentence.id, 'preloading');
-    });
+    }
 
     console.log(`[Preload] Queued ${toPreload.length} sentences for full chapter preload (maxConcurrent: ${this.config.maxConcurrentTTS})`);
 
@@ -1113,17 +1150,22 @@ export class PreloadQueueManager {
    * Called by AudioSyncService when playback advances
    */
   setCurrentPlayingIndex(index: number, sentences: Sentence[]): void {
-    console.log(`[ASR] setCurrentPlayingIndex: index=${index}, sentences=${sentences.length}`);
-
     // Clear ASR queue when switching to a different chapter (sentences array changed)
     // This prevents holding references to old chapter's sentences
     if (this.currentSentences !== sentences && this.currentSentences.length > 0) {
-      console.log('[ASR] Chapter changed, clearing ASR queue to release old sentence references');
       this.clearASRQueue();
     }
 
     this.currentPlayingIndex = index;
     this.currentSentences = sentences;
+
+    // Reprioritize the next 1-2 sentences onto the fast path (urgentSteps).
+    // preloadFullChapter queues every sentence with priority=index so only index 0
+    // gets urgentSteps; by calling prioritize() here we push the imminent sentences
+    // back to priority 0 so they synthesize with urgentSteps instead of totalSteps.
+    for (let i = index + 1; i <= index + 2 && i < sentences.length; i++) {
+      this.prioritize(sentences[i]);
+    }
 
     // Queue current and upcoming sentences for ASR refinement
     this.maybeQueueForASR();

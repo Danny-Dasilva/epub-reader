@@ -7,6 +7,14 @@
 import { PlaybackEvent, PlaybackEventHandler, SentenceAudio } from './types';
 import { WordTimestamp } from '../asr/types';
 import { StreamingAudioWorklet, isAudioWorkletSupported } from './StreamingAudioWorklet';
+import { usePlaybackStore } from '@/store/playbackStore';
+
+const MEDIA_ERROR_CODES: Record<number, string> = {
+  1: 'MEDIA_ERR_ABORTED',
+  2: 'MEDIA_ERR_NETWORK',
+  3: 'MEDIA_ERR_DECODE',
+  4: 'MEDIA_ERR_SRC_NOT_SUPPORTED'
+};
 
 /** Callback to get audio for a sentence offset ahead of current */
 type GetSentenceAheadFn = (offset: number) => SentenceAudio | undefined;
@@ -22,6 +30,9 @@ export class AudioPlayer {
   private playbackRate: number = 1.0;
   private volume: number = 1.0;
   private playInProgress: boolean = false;
+  // FIX #6: Async lock to prevent race condition in playSentence
+  private playLock: Promise<void> = Promise.resolve();
+  private playLockResolve: (() => void) | null = null;
 
   // Dual-player ping-pong strategy for near-gapless playback
   private playerA: HTMLAudioElement | null = null;
@@ -90,13 +101,13 @@ export class AudioPlayer {
   }
 
   private emit(event: PlaybackEvent): void {
-    this.eventHandlers.forEach(handler => {
+    for (const handler of this.eventHandlers) {
       try {
         handler(event);
       } catch (e) {
         console.error('Error in playback event handler:', e);
       }
-    });
+    }
   }
 
   setVolume(volume: number): void {
@@ -136,10 +147,18 @@ export class AudioPlayer {
   }
 
   async playSentence(sentence: SentenceAudio): Promise<void> {
+    // FIX #6: Acquire lock to prevent race condition with concurrent calls
+    // This ensures only one playSentence executes at a time
+    const previousLock = this.playLock;
+    let resolveLock: () => void;
+    this.playLock = new Promise<void>(resolve => { resolveLock = resolve; });
+
+    // Wait for any previous play operation to complete
+    await previousLock;
+
     if (this.playInProgress) {
       console.log('[AudioPlayer] Interrupting in-progress playback for:', sentence.sentenceId);
       this.stopInternal();
-      await Promise.resolve();
     }
 
     this.playInProgress = true;
@@ -182,28 +201,29 @@ export class AudioPlayer {
         // If next wasn't triggered by timeupdate (short sentences), handle here
         if (!this.nextStartTriggered && this.nextSentenceQueued) {
           this.startNextPlayer();
-        } else if (!this.nextSentenceQueued) {
-          // No more sentences queued - end of playback
+        } else if (!this.nextSentenceQueued && this.getActivePlayer() === player) {
+          // Only clean up if THIS element is still the active one. After a near-end
+          // hand-off the active element is the NEXT sentence's player; this stale
+          // onended must not reset isPlaying / stop tracking for audio still playing.
+          // For gapless mode: end of playback, emit stop
+          // For single-sentence mode: just clean up, let sentenceEnd handler decide
           this.isPlaying = false;
-          this.gaplessMode = false;
           this.stopWordTracking();
-          this.emit({ type: 'stop' });
+          if (this.gaplessMode) {
+            this.gaplessMode = false;
+            this.emit({ type: 'stop' });
+          }
+          // Note: Don't emit 'stop' for single-sentence mode - sentenceEnd handler manages flow
         }
       };
 
       player.onerror = (e) => {
         const errorCode = player.error?.code;
         const errorMessage = player.error?.message || 'Unknown error';
-        const codeNames: Record<number, string> = {
-          1: 'MEDIA_ERR_ABORTED',
-          2: 'MEDIA_ERR_NETWORK',
-          3: 'MEDIA_ERR_DECODE',
-          4: 'MEDIA_ERR_SRC_NOT_SUPPORTED'
-        };
 
         console.error('Audio playback error:', {
           code: errorCode,
-          codeName: errorCode ? codeNames[errorCode] : 'unknown',
+          codeName: errorCode ? MEDIA_ERROR_CODES[errorCode] : 'unknown',
           message: errorMessage,
           src: player.src?.substring(0, 100),
           event: e
@@ -211,9 +231,13 @@ export class AudioPlayer {
 
         this.emit({
           type: 'error',
-          error: new Error(`Audio playback failed: ${codeNames[errorCode || 0] || errorMessage}`)
+          error: new Error(`Audio playback failed: ${MEDIA_ERROR_CODES[errorCode || 0] || errorMessage}`)
         });
       };
+
+      // Capture user pause intent BEFORE awaiting play()
+      // Mirrors the guard in startStreamingPlayback (lines 726-728)
+      const wasPaused = usePlaybackStore.getState().session.isPaused;
 
       // Gain ramp to prevent click
       if (this.gainNode && this.audioContext) {
@@ -221,21 +245,37 @@ export class AudioPlayer {
       }
 
       await player.play();
-      this.isPlaying = true;
 
-      // Ramp gain up
-      if (this.gainNode && this.audioContext) {
-        const now = this.audioContext.currentTime;
-        this.gainNode.gain.linearRampToValueAtTime(this.volume, now + 0.015);
+      // Re-check pause state: user may have clicked pause DURING the await
+      const currentlyPaused = usePlaybackStore.getState().session.isPaused;
+
+      if (wasPaused || currentlyPaused) {
+        // User intended to be paused — keep audio element paused, don't ramp gain
+        player.pause();
+        this.isPlaying = false;
+        // Still emit sentenceStart so word highlighting initialises correctly,
+        // but skip play/wordTracking so audio stays silent
+        this.emit({
+          type: 'sentenceStart',
+          sentenceId: sentence.sentenceId
+        });
+      } else {
+        this.isPlaying = true;
+
+        // Ramp gain up
+        if (this.gainNode && this.audioContext) {
+          const now = this.audioContext.currentTime;
+          this.gainNode.gain.linearRampToValueAtTime(this.volume, now + 0.015);
+        }
+
+        this.emit({
+          type: 'sentenceStart',
+          sentenceId: sentence.sentenceId
+        });
+
+        this.emit({ type: 'play' });
+        this.startWordTracking();
       }
-
-      this.emit({
-        type: 'sentenceStart',
-        sentenceId: sentence.sentenceId
-      });
-
-      this.emit({ type: 'play' });
-      this.startWordTracking();
 
     } catch (e) {
       console.error('Failed to start playback:', e);
@@ -245,6 +285,8 @@ export class AudioPlayer {
       });
     } finally {
       this.playInProgress = false;
+      // FIX #6: Release lock to allow next playSentence to proceed
+      resolveLock!();
     }
   }
 
@@ -302,11 +344,17 @@ export class AudioPlayer {
 
       if (!this.nextStartTriggered && this.nextSentenceQueued) {
         this.startNextPlayer();
-      } else if (!this.nextSentenceQueued) {
+      } else if (!this.nextSentenceQueued && this.getActivePlayer() === newActive) {
+        // Only clean up if THIS element is still the active one (see playSentence
+        // onended). A stale onended after a hand-off must not reset playback state
+        // for the new active element.
         this.isPlaying = false;
-        this.gaplessMode = false;
         this.stopWordTracking();
-        this.emit({ type: 'stop' });
+        if (this.gaplessMode) {
+          this.gaplessMode = false;
+          this.emit({ type: 'stop' });
+        }
+        // Note: Don't emit 'stop' for single-sentence mode - sentenceEnd handler manages flow
       }
     };
 
@@ -322,12 +370,13 @@ export class AudioPlayer {
   }
 
   pause(): void {
-    if (!this.isPlaying) return;
-
-    const player = this.getActivePlayer();
-    if (player) {
-      player.pause();
-    }
+    // Authoritative pause: do NOT gate on this.isPlaying. During a dual-player
+    // hand-off, the finishing element's stale onended can reset this.isPlaying to
+    // false while the NEW active element is still audible — gating made pause a
+    // no-op and left audio playing ("pause doesn't work / sentence force-resumes").
+    // Pause BOTH elements so pause is always honored regardless of internal flag.
+    this.playerA?.pause();
+    this.playerB?.pause();
     this.isPlaying = false;
     this.stopWordTracking();
 
@@ -354,12 +403,33 @@ export class AudioPlayer {
     this.lastWordIndex = -1;
     this.isPlaying = false;
     this.gaplessMode = false;
+    // Note: pause state is managed by playbackStore.session.isPaused
 
     this.emit({ type: 'stop' });
   }
 
+  /**
+   * Stop playback for sentence transition - does NOT emit 'stop' event
+   * Use this when transitioning between sentences to avoid corrupting playback state.
+   * The 'stop' event triggers state updates that can interfere with the next sentence starting.
+   */
+  stopForTransition(): void {
+    this.stopInternal();
+    this.lastWordIndex = -1;
+    this.isPlaying = false;
+    // Note: Do NOT emit 'stop' event - this is a transition, not a user stop
+    // Do NOT clear gaplessMode - transitions preserve playback mode
+  }
+
   private stopInternal(): void {
     this.stopWordTracking();
+
+    // Stop streaming worklet FIRST to prevent overlapping audio
+    // Must happen before HTMLAudioElement cleanup
+    if (this.streamingWorklet) {
+      this.streamingWorklet.disconnect();
+      this.streamingWorklet.reset();
+    }
 
     // Fade out to prevent click
     if (this.gainNode && this.audioContext && this.audioContext.state === 'running') {
@@ -383,26 +453,38 @@ export class AudioPlayer {
     this.currentSentence = null;
     this.nextSentenceQueued = null;
     this.nextStartTriggered = false;
+
+    // FIX #3: Clear streaming state to prevent stale word tracking
+    this.isStreamingMode = false;
+    this.streamingSamplesConsumed = 0;
+
+    // FIX #6: Ensure playInProgress is cleared to prevent deadlocks
+    this.playInProgress = false;
   }
 
   private startWordTracking(): void {
     this.stopWordTracking();
 
     const track = () => {
-      if (!this.isPlaying || !this.currentSentence) return;
+      if (!this.isPlaying || !this.currentSentence) {
+        return;
+      }
 
       let currentTime: number;
       let player: HTMLAudioElement | null = null;
 
       if (this.isStreamingMode) {
         // For streaming: compute elapsed time from samples consumed
-        // This properly accounts for playback rate changes
+        // samplesConsumed tracks OUTPUT samples (wall-clock time)
+        // Word timestamps are in audio content time, so multiply by playback rate
         const sampleRate = this.audioContext?.sampleRate ?? 44100;
-        currentTime = this.streamingSamplesConsumed / sampleRate;
+        currentTime = (this.streamingSamplesConsumed / sampleRate) * this.playbackRate;
       } else {
         // For non-streaming: use HTMLAudioElement currentTime
         player = this.getActivePlayer();
-        if (!player) return;
+        if (!player) {
+          return;
+        }
         currentTime = player.currentTime;
 
         // Performance optimization #3: Consolidated sentence-end detection
@@ -658,30 +740,52 @@ export class AudioPlayer {
   /**
    * Start streaming playback mode
    * Returns a worklet instance that can receive audio chunks
+   * @param sentence - The sentence audio to play
+   * @param explicitPlaybackRate - Optional explicit playback rate (avoids race with async React effects)
    */
-  async startStreamingPlayback(sentence: SentenceAudio): Promise<StreamingAudioWorklet> {
+  async startStreamingPlayback(sentence: SentenceAudio, explicitPlaybackRate?: number): Promise<StreamingAudioWorklet> {
     await this.ensureAudioContext();
 
-    // Stop any existing playback
-    this.stopInternal();
+    // Capture user pause intent from store BEFORE any state changes
+    // This allows switching sentences while paused without auto-playing
+    const wasPaused = usePlaybackStore.getState().session.isPaused;
 
-    // Increment session ID to invalidate any pending callbacks from previous session
+    // Increment session ID BEFORE stopInternal to invalidate any pending callbacks
     // This guards against race conditions where stale 'ended' messages arrive after
-    // a new sentence has started
-    this.streamingSessionId++;
-    const currentSessionId = this.streamingSessionId;
+    // a new sentence has started. Must happen BEFORE stop so old callbacks see old ID.
+    const currentSessionId = ++this.streamingSessionId;
+
+    // Stop any existing playback (old callbacks will now see stale session ID)
+    this.stopInternal();
 
     // Store sentence for word tracking
     this.currentSentence = sentence;
     this.lastWordIndex = -1;
 
+    // Use explicit rate if provided (avoids race with async React effects)
+    const rateToUse = explicitPlaybackRate ?? this.playbackRate;
+
     // Create or reuse streaming worklet
     if (!this.streamingWorklet) {
       this.streamingWorklet = new StreamingAudioWorklet();
-      await this.streamingWorklet.initialize(this.audioContext!);
+      // Pass playbackRate via processorOptions for synchronous init (no race)
+      await this.streamingWorklet.initialize(this.audioContext!, rateToUse);
     } else {
-      // Reset existing worklet
-      this.streamingWorklet.reset();
+      // Reset with playback rate atomically to prevent chipmunk audio
+      this.streamingWorklet.resetWithPlaybackRate(rateToUse);
+    }
+
+    // Emit sentenceStart BEFORE pause check to ensure it always fires
+    // This is critical for word highlighting initialization
+    this.emit({
+      type: 'sentenceStart',
+      sentenceId: sentence.sentenceId
+    });
+
+    // If user was paused, immediately pause the worklet
+    // Audio will buffer but not play until user resumes
+    if (wasPaused && this.streamingWorklet) {
+      this.streamingWorklet.pause();
     }
 
     // Reset samples consumed for new sentence
@@ -695,17 +799,27 @@ export class AudioPlayer {
           console.warn('[AudioPlayer] Ignoring stale onStarted callback');
           return;
         }
-        this.isPlaying = true;
+
+        // Check CURRENT pause state, not just initial wasPaused
+        // User may have clicked pause AFTER streaming started but BEFORE buffer filled
+        const currentlyPaused = usePlaybackStore.getState().session.isPaused;
+
+        // Only set isPlaying to true if user hasn't paused
+        // If user paused, the worklet is already paused - don't override
+        if (!currentlyPaused) {
+          this.isPlaying = true;
+          this.emit({ type: 'play' });
+        }
+
         this.isStreamingMode = true;
         // Record start time for word tracking
         this.streamingStartTime = this.audioContext?.currentTime ?? 0;
-        this.emit({
-          type: 'sentenceStart',
-          sentenceId: sentence.sentenceId
-        });
-        this.emit({ type: 'play' });
-        // Start word highlighting
-        this.startWordTracking();
+
+        // Start word highlighting only if not paused
+        // RAF loop requires isPlaying=true to emit wordChange events
+        if (!currentlyPaused) {
+          this.startWordTracking();
+        }
       },
       onEnded: (samplesConsumed?: number) => {
         // CRITICAL: Ignore if this callback is from a stale session
@@ -716,8 +830,6 @@ export class AudioPlayer {
           return;
         }
         this.stopWordTracking();
-        this.isPlaying = false;
-        this.isStreamingMode = false;
         // Calculate actual duration from samples consumed (accounts for playback rate)
         const sampleRate = this.audioContext?.sampleRate ?? 44100;
         const duration = (samplesConsumed ?? this.streamingSamplesConsumed) / sampleRate;
@@ -726,6 +838,10 @@ export class AudioPlayer {
           sentenceId: sentence.sentenceId,
           duration
         });
+        // CRITICAL: Set isPlaying AFTER sentenceEnd event
+        // This allows the event handler to check isPlaying and trigger auto-advance
+        this.isPlaying = false;
+        this.isStreamingMode = false;
         // DON'T emit 'stop' - let sentenceEnd handler decide whether to advance
         // This allows automatic sentence transitions like non-streaming modes
       },
@@ -737,8 +853,7 @@ export class AudioPlayer {
       }
     });
 
-    // Apply current playback rate to streaming worklet
-    this.streamingWorklet.setPlaybackRate(this.playbackRate);
+    // NOTE: Playback rate already set via processorOptions (init) or resetWithPlaybackRate
 
     // Connect to output
     if (this.audioContext) {
@@ -779,6 +894,7 @@ export class AudioPlayer {
       this.streamingWorklet.pause();
     }
     this.isPlaying = false;
+    // Note: pause state is tracked by playbackStore.session.isPaused
     this.emit({ type: 'pause' });
   }
 
@@ -790,6 +906,7 @@ export class AudioPlayer {
       this.streamingWorklet.resume();
     }
     this.isPlaying = true;
+    // Note: pause state is cleared by playbackStore.session.isPaused
     this.emit({ type: 'play' });
   }
 
@@ -803,6 +920,7 @@ export class AudioPlayer {
     }
     this.isStreamingMode = false;
     this.isPlaying = false;
+    // Note: pause state is managed by playbackStore.session.isPaused
     this.emit({ type: 'stop' });
   }
 
@@ -857,4 +975,21 @@ export function getSharedAudioPlayer(): AudioPlayer {
     sharedPlayer = new AudioPlayer();
   }
   return sharedPlayer;
+}
+
+/**
+ * Fully tear down the shared player and reset the singleton so the next
+ * getSharedAudioPlayer() builds a fresh instance.
+ *
+ * IMPORTANT: Only call this on true app teardown. A plain AudioSyncService.dispose()
+ * must NOT dispose the shared player — doing so nulls playerA/B, closes the
+ * AudioContext, and clears event handlers on a singleton that newer/concurrent
+ * services still reference, which silently breaks event forwarding (word
+ * highlighting + auto-advance to the next sentence).
+ */
+export function disposeSharedAudioPlayer(): void {
+  if (sharedPlayer) {
+    sharedPlayer.dispose();
+    sharedPlayer = null;
+  }
 }

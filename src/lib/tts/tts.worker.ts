@@ -7,6 +7,7 @@
 import * as ort from 'onnxruntime-web';
 import { preprocessText } from './textPreprocessor';
 import { VoiceStyleManager } from './VoiceStyleManager';
+import { WordTimestamp } from '../asr/types';
 
 // Worker message types
 export interface WorkerInitMessage {
@@ -56,6 +57,14 @@ export interface WorkerSynthesizeStreamingMessage {
   preprocessedText?: string;
 }
 
+export interface WorkerPredictDurationMessage {
+  type: 'predictDuration';
+  id: string;
+  text: string;
+  speed: number;
+  preprocessedText?: string;
+}
+
 export type WorkerInMessage =
   | WorkerInitMessage
   | WorkerSynthesizeMessage
@@ -63,7 +72,8 @@ export type WorkerInMessage =
   | WorkerCancelAllMessage
   | WorkerSetVoiceMessage
   | WorkerSetSpeedMessage
-  | WorkerSynthesizeStreamingMessage;
+  | WorkerSynthesizeStreamingMessage
+  | WorkerPredictDurationMessage;
 
 export interface WorkerReadyResponse {
   type: 'ready';
@@ -84,6 +94,7 @@ export interface WorkerCompleteResponse {
   wavBuffer: ArrayBuffer;  // Optimization #3: Pre-encoded WAV buffer (avoids main thread encoding)
   duration: number;
   sampleRate: number;
+  wordTimestamps: WordTimestamp[];  // Word-level timestamps from heuristic
 }
 
 export interface WorkerCancelledResponse {
@@ -112,6 +123,13 @@ export interface WorkerChunkResponse {
   isLast: boolean;
 }
 
+export interface WorkerDurationResponse {
+  type: 'duration';
+  id: string;
+  duration: number;
+  wordTimestamps: WordTimestamp[];
+}
+
 export type WorkerOutMessage =
   | WorkerReadyResponse
   | WorkerProgressResponse
@@ -119,7 +137,8 @@ export type WorkerOutMessage =
   | WorkerCancelledResponse
   | WorkerErrorResponse
   | WorkerLoadingResponse
-  | WorkerChunkResponse;
+  | WorkerChunkResponse
+  | WorkerDurationResponse;
 
 /**
  * Optimization #3: WAV encoding in worker (avoids main thread blocking)
@@ -163,6 +182,101 @@ function float32ToWav(audioData: Float32Array, sampleRate: number): ArrayBuffer 
   }
 
   return buffer;
+}
+
+/**
+ * Generate word-level timestamps using phoneme-aware heuristic.
+ * Uses vowel-cluster syllable estimation and consonant weighting instead of
+ * pure character count. Short function words get a 0.7x multiplier so they
+ * highlight faster, while long content words highlight longer.
+ */
+
+const SHORT_WORDS = new Set([
+  'a', 'an', 'the', 'is', 'am', 'are', 'was', 'were', 'be', 'been',
+  'do', 'did', 'has', 'had', 'he', 'she', 'it', 'we', 'me', 'my',
+  'of', 'to', 'in', 'on', 'at', 'by', 'or', 'and', 'but', 'if',
+  'so', 'no', 'not', 'up', 'as', 'for', 'its', 'his', 'her', 'our',
+]);
+
+const NON_ALPHA_PATTERN = /[^a-zA-Z]/g;
+const VOWEL_CLUSTERS_PATTERN = /[aeiouy]+/gi;
+const VOWELS_PATTERN = /[aeiouy]/gi;
+const WORD_SPLIT_PATTERN = /\s+/;
+const PARAGRAPH_SPLIT_PATTERN = /\n\s*\n+/;
+const SENTENCE_SPLIT_PATTERN = /(?<!Mr\.|Mrs\.|Ms\.|Dr\.|Prof\.|Sr\.|Jr\.|Ph\.D\.|etc\.|e\.g\.|i\.e\.|vs\.|Inc\.|Ltd\.|Co\.|Corp\.|St\.|Ave\.|Blvd\.)(?<!\b[A-Z]\.)(?<=[.!?])\s+/;
+const VOICE_ID_PATTERN = /\/voice_styles\/(\w+)\.json$/;
+
+/**
+ * Estimate a phoneme-aware weight for a word.
+ * Uses vowel clusters as syllable proxy and weights consonants lower.
+ */
+function estimateWordWeight(word: string): number {
+  const clean = word.replace(NON_ALPHA_PATTERN, '').toLowerCase();
+  if (clean.length === 0) return 0.5;
+
+  const vowelClusters = clean.match(VOWEL_CLUSTERS_PATTERN) || [];
+  const syllables = Math.max(vowelClusters.length, 1);
+
+  const consonants = clean.replace(VOWELS_PATTERN, '').length;
+
+  let weight = syllables * 1.0 + consonants * 0.3;
+
+  if (SHORT_WORDS.has(clean)) {
+    weight *= 0.7;
+  }
+
+  return weight;
+}
+
+function heuristicWordTiming(
+  text: string,
+  totalDuration: number,
+  pauseAfterPunctuation: number = 0.2
+): WordTimestamp[] {
+  const words = text.split(WORD_SPLIT_PATTERN).filter(w => w.length > 0);
+  if (words.length === 0) return [];
+
+  // Calculate total weight using phoneme-aware estimation
+  const weights = words.map(w => estimateWordWeight(w));
+  const totalWeight = weights.reduce((sum, w) => sum + w, 0);
+
+  // Base rate: weight units per second
+  const weightRate = totalWeight / totalDuration;
+
+  const wordTimes: WordTimestamp[] = [];
+  let currentTime = 0;
+
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i];
+    let wordDuration = weights[i] / weightRate;
+
+    // Add extra pause after punctuation
+    const lastChar = word[word.length - 1];
+    if (lastChar && '.!?'.includes(lastChar)) {
+      wordDuration += pauseAfterPunctuation;
+    } else if (lastChar && ',;:'.includes(lastChar)) {
+      wordDuration += pauseAfterPunctuation / 2;
+    }
+
+    wordTimes.push({
+      text: word,
+      start: currentTime,
+      end: currentTime + wordDuration,
+    });
+
+    currentTime += wordDuration;
+  }
+
+  // Scale to fit total duration
+  if (wordTimes.length > 0 && currentTime > 0) {
+    const scale = totalDuration / currentTime;
+    for (const wt of wordTimes) {
+      wt.start *= scale;
+      wt.end *= scale;
+    }
+  }
+
+  return wordTimes;
 }
 
 // Worker state
@@ -220,10 +334,17 @@ async function loadVoiceStyle(baseUrl: string, voiceStylePath: string): Promise<
  * @returns Voice ID like "M1"
  */
 function extractVoiceId(voiceStylePath: string): string {
-  const match = voiceStylePath.match(/\/voice_styles\/(\w+)\.json$/);
+  const match = voiceStylePath.match(VOICE_ID_PATTERN);
   return match?.[1] || 'M1';
 }
 
+
+// Supertonic 3 is multilingual and was trained to always receive the input text
+// wrapped in language tokens: `<en>...text...</en>`. Without them the v3 text encoder
+// collapses to broadband noise (garbled audio) while the duration predictor still
+// returns a plausible length (so word timestamps look fine). See Supertonic SDK
+// core.py `_add_language_token`. Supertonic 2 did not use these tokens.
+const TTS_LANG = 'en';
 
 /**
  * Convert text to IDs and create mask
@@ -232,7 +353,11 @@ function extractVoiceId(voiceStylePath: string): string {
  * @param skipPreprocessing - If true, assumes text is already preprocessed (optimization)
  */
 function processText(textList: string[], indexer: number[], skipPreprocessing: boolean = false): { textIds: number[][]; textMask: number[][][] } {
-  const processedTexts = skipPreprocessing ? textList : textList.map(t => preprocessText(t));
+  const cleanedTexts = skipPreprocessing ? textList : textList.map(t => preprocessText(t));
+  // Wrap each fully-preprocessed sentence in v3 language tokens. This must happen
+  // AFTER preprocessing — preprocessText() strips '/' (REPLACEMENTS), which would
+  // destroy the closing `</en>` tag. The period stays inside the tags, matching the SDK.
+  const processedTexts = cleanedTexts.map(t => `<${TTS_LANG}>${t}</${TTS_LANG}>`);
   const textIdsLengths = processedTexts.map(t => t.length);
   const maxLen = Math.max(...textIdsLengths);
 
@@ -262,14 +387,14 @@ function processText(textList: string[], indexer: number[], skipPreprocessing: b
  * Chunk text into segments
  */
 function chunkText(text: string, maxLen: number = 300): string[] {
-  const paragraphs = text.trim().split(/\n\s*\n+/).filter(p => p.trim());
+  const paragraphs = text.trim().split(PARAGRAPH_SPLIT_PATTERN).filter(p => p.trim());
   const chunks: string[] = [];
 
   for (let paragraph of paragraphs) {
     paragraph = paragraph.trim();
     if (!paragraph) continue;
 
-    const sentences = paragraph.split(/(?<!Mr\.|Mrs\.|Ms\.|Dr\.|Prof\.|Sr\.|Jr\.|Ph\.D\.|etc\.|e\.g\.|i\.e\.|vs\.|Inc\.|Ltd\.|Co\.|Corp\.|St\.|Ave\.|Blvd\.)(?<!\b[A-Z]\.)(?<=[.!?])\s+/);
+    const sentences = paragraph.split(SENTENCE_SPLIT_PATTERN);
 
     let currentChunk = "";
     for (const sentence of sentences) {
@@ -545,7 +670,7 @@ async function synthesize(
   totalSteps: number,
   requestId: string,
   preprocessedText?: string
-): Promise<{ wav: Float32Array; duration: number } | null> {
+): Promise<{ wav: Float32Array; duration: number; wordTimestamps: WordTimestamp[] } | null> {
   if (!dpSession || !textEncSession || !vectorEstSession || !vocoderSession || !voiceStyle || !textProcessor) {
     throw new Error('TTS not initialized');
   }
@@ -733,7 +858,11 @@ async function synthesize(
   // Add silence duration between chunks to total duration
   durCat += (wavChunks.length - 1) * 0.3;
 
-  return { wav: wavCat, duration: durCat };
+  // Generate word timestamps from original text and final duration
+  // Use original text (not preprocessed) for accurate word boundaries
+  const wordTimestamps = heuristicWordTiming(text, durCat);
+
+  return { wav: wavCat, duration: durCat, wordTimestamps };
 }
 
 /**
@@ -857,7 +986,8 @@ self.onmessage = async (event: MessageEvent<WorkerInMessage>) => {
             wav: result.wav,
             wavBuffer,
             duration: result.duration,
-            sampleRate
+            sampleRate,
+            wordTimestamps: result.wordTimestamps
           } as WorkerCompleteResponse, { transfer: [result.wav.buffer, wavBuffer] });
         }
       } catch (error) {
@@ -950,6 +1080,73 @@ self.onmessage = async (event: MessageEvent<WorkerInMessage>) => {
         self.postMessage({
           type: 'error',
           message: error instanceof Error ? error.message : 'Failed to load voice'
+        } as WorkerErrorResponse);
+      }
+      break;
+    }
+
+    case 'predictDuration': {
+      // Fast duration prediction without full synthesis
+      // Used for streaming path to get accurate timestamps before audio starts
+      try {
+        if (!dpSession || !voiceStyle || !textProcessor) {
+          throw new Error('TTS not initialized');
+        }
+
+        const usePreprocessed = !!message.preprocessedText;
+        const textToProcess = usePreprocessed ? message.preprocessedText : message.text;
+        const textChunks = chunkText(textToProcess!);
+
+        let totalDuration = 0;
+
+        for (const chunk of textChunks) {
+          const { textIds, textMask } = processText([chunk], textProcessor, usePreprocessed);
+          const bsz = 1;
+
+          const textIdsTensor = new ort.Tensor(
+            'int64',
+            new BigInt64Array(textIds.flat().map(x => BigInt(x))),
+            [bsz, textIds[0].length]
+          );
+
+          const textMaskTensor = new ort.Tensor(
+            'float32',
+            new Float32Array(textMask.flat(2)),
+            [bsz, 1, textMask[0][0].length]
+          );
+
+          const dpOutputs = await dpSession.run({
+            text_ids: textIdsTensor,
+            style_dp: voiceStyle.dp,
+            text_mask: textMaskTensor
+          });
+
+          const duration = (dpOutputs.duration.data as Float32Array)[0];
+          totalDuration += duration / message.speed;
+
+          // Dispose tensors
+          textIdsTensor.dispose?.();
+          textMaskTensor.dispose?.();
+          dpOutputs.duration.dispose?.();
+        }
+
+        // Add silence between chunks
+        totalDuration += (textChunks.length - 1) * 0.3;
+
+        // Generate word timestamps from original text
+        const wordTimestamps = heuristicWordTiming(message.text, totalDuration);
+
+        self.postMessage({
+          type: 'duration',
+          id: message.id,
+          duration: totalDuration,
+          wordTimestamps
+        } as WorkerDurationResponse);
+      } catch (error) {
+        self.postMessage({
+          type: 'error',
+          id: message.id,
+          message: error instanceof Error ? error.message : 'Duration prediction failed'
         } as WorkerErrorResponse);
       }
       break;

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useCallback } from 'react';
+import { useEffect, useRef } from 'react';
 import { usePlaybackStore } from '@/store/playbackStore';
 import { useNavigationStore } from '@/store/navigationStore';
 
@@ -23,56 +23,24 @@ interface UseMediaSessionOptions {
  * - Seek buttons for 15-second skip
  */
 export function useMediaSession(options: UseMediaSessionOptions = {}) {
-  const {
-    onPlay,
-    onPause,
-    onNextSentence,
-    onPrevSentence,
-    onSeekForward,
-    onSeekBackward
-  } = options;
+  // Store all callbacks in refs to avoid re-registering media session handlers
+  // every time the parent re-renders with new function references
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
 
   const isPlaying = usePlaybackStore(state => state.isPlaying);
-  const setIsPlaying = usePlaybackStore(state => state.setIsPlaying);
   const allowBackgroundPlayback = usePlaybackStore(state => state.allowBackgroundPlayback);
 
   const currentBook = useNavigationStore(state => state.currentBook);
   const currentChapterIndex = useNavigationStore(state => state.currentChapterIndex);
 
-  // Handle play action
-  const handlePlay = useCallback(() => {
-    if (onPlay) {
-      onPlay();
-    } else {
-      setIsPlaying(true);
-    }
-  }, [onPlay, setIsPlaying]);
-
-  // Handle pause action
-  const handlePause = useCallback(() => {
-    if (onPause) {
-      onPause();
-    } else {
-      setIsPlaying(false);
-    }
-  }, [onPause, setIsPlaying]);
-
   // Update metadata when book/chapter changes
   useEffect(() => {
-    // Only setup Media Session if background playback is allowed
-    // and the API is available
-    if (!allowBackgroundPlayback || !('mediaSession' in navigator)) {
-      return;
-    }
-
-    if (!currentBook) {
-      return;
-    }
+    if (!allowBackgroundPlayback || !('mediaSession' in navigator)) return;
+    if (!currentBook) return;
 
     const currentChapter = currentBook.chapters[currentChapterIndex];
-    if (!currentChapter) {
-      return;
-    }
+    if (!currentChapter) return;
 
     // Set metadata
     const metadata: MediaMetadataInit = {
@@ -93,41 +61,44 @@ export function useMediaSession(options: UseMediaSessionOptions = {}) {
 
   // Update playback state
   useEffect(() => {
-    if (!allowBackgroundPlayback || !('mediaSession' in navigator)) {
-      return;
-    }
+    if (!allowBackgroundPlayback || !('mediaSession' in navigator)) return;
 
     navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
   }, [isPlaying, allowBackgroundPlayback]);
 
-  // Set up action handlers
+  // Set up action handlers - registered once via refs, no churn on re-renders
   useEffect(() => {
-    if (!allowBackgroundPlayback || !('mediaSession' in navigator)) {
-      return;
-    }
+    if (!allowBackgroundPlayback || !('mediaSession' in navigator)) return;
 
-    // Play/Pause
-    navigator.mediaSession.setActionHandler('play', handlePlay);
-    navigator.mediaSession.setActionHandler('pause', handlePause);
+    const { setIsPlaying } = usePlaybackStore.getState();
+
+    // Play/Pause - use refs to always call latest callback
+    navigator.mediaSession.setActionHandler('play', () => {
+      const { onPlay } = optionsRef.current;
+      if (onPlay) { onPlay(); } else { setIsPlaying(true); }
+    });
+    navigator.mediaSession.setActionHandler('pause', () => {
+      const { onPause } = optionsRef.current;
+      if (onPause) { onPause(); } else { setIsPlaying(false); }
+    });
 
     // Next/Previous (sentence navigation)
-    if (onNextSentence) {
-      navigator.mediaSession.setActionHandler('nexttrack', onNextSentence);
-    }
-    if (onPrevSentence) {
-      navigator.mediaSession.setActionHandler('previoustrack', onPrevSentence);
-    }
+    navigator.mediaSession.setActionHandler('nexttrack', () => {
+      optionsRef.current.onNextSentence?.();
+    });
+    navigator.mediaSession.setActionHandler('previoustrack', () => {
+      optionsRef.current.onPrevSentence?.();
+    });
 
     // Seek forward/backward (15 second skip)
-    if (onSeekForward) {
-      navigator.mediaSession.setActionHandler('seekforward', onSeekForward);
-    }
-    if (onSeekBackward) {
-      navigator.mediaSession.setActionHandler('seekbackward', onSeekBackward);
-    }
+    navigator.mediaSession.setActionHandler('seekforward', () => {
+      optionsRef.current.onSeekForward?.();
+    });
+    navigator.mediaSession.setActionHandler('seekbackward', () => {
+      optionsRef.current.onSeekBackward?.();
+    });
 
     return () => {
-      // Clean up handlers
       try {
         navigator.mediaSession.setActionHandler('play', null);
         navigator.mediaSession.setActionHandler('pause', null);
@@ -139,13 +110,5 @@ export function useMediaSession(options: UseMediaSessionOptions = {}) {
         // Some browsers may not support removing handlers
       }
     };
-  }, [
-    allowBackgroundPlayback,
-    handlePlay,
-    handlePause,
-    onNextSentence,
-    onPrevSentence,
-    onSeekForward,
-    onSeekBackward
-  ]);
+  }, [allowBackgroundPlayback]);  // Only re-register when background playback toggles
 }

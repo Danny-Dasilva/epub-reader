@@ -1,11 +1,15 @@
 import { create } from 'zustand';
 import { useEffect, useState, useRef } from 'react';
+import { useNavigationStore } from './navigationStore';
 
 // Sentence audio state for visual feedback
 export type SentenceAudioState = 'pending' | 'preloading' | 'ready' | 'playing' | 'played' | 'error';
 
 // Timestamp source for highlighting accuracy indicator
-export type TimestampSource = 'estimated' | 'asr';
+// - 'estimated': Simple character-weighted estimation
+// - 'asr': ASR-verified timestamps (highest accuracy)
+// - 'tts': TTS model duration prediction (~25ms accuracy)
+export type TimestampSource = 'estimated' | 'asr' | 'tts';
 
 export interface SentenceStateMap {
   [sentenceId: string]: SentenceAudioState;
@@ -201,6 +205,16 @@ export const clearAudioPosition = (): void => {
 // and it's appropriate to use normal Zustand reactivity for these updates.
 // ============================================================================
 
+// Helper function to extract sentence index from sentenceId (format: chapterId-sIndex)
+function extractSentenceIndex(sentenceId: string): number | null {
+  const match = sentenceId.match(/-s(\d+)$/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+// LRU eviction configuration
+const MAX_SENTENCES_WINDOW = 100; // ±50 from current position
+const EVICTION_THRESHOLD = MAX_SENTENCES_WINDOW * 1.5; // 150 entries
+
 interface SentenceStateStoreState {
   sentenceStates: SentenceStateMap;
   asrCompletedIds: Set<string>;  // Sentences with ASR-refined timestamps
@@ -214,6 +228,34 @@ interface SentenceStateStoreActions {
   clearASRCompleted: () => void;
 }
 
+// Eviction logic: Keep only sentences within ±50 of current playback position
+function evictOldSentenceStates(
+  currentStates: SentenceStateMap,
+  currentSentenceIndex: number
+): SentenceStateMap {
+  const stateEntries = Object.entries(currentStates);
+
+  // Only evict if we exceed threshold
+  if (stateEntries.length <= EVICTION_THRESHOLD) {
+    return currentStates;
+  }
+
+  const halfWindow = MAX_SENTENCES_WINDOW / 2; // 50 sentences
+  const minIndex = currentSentenceIndex - halfWindow;
+  const maxIndex = currentSentenceIndex + halfWindow;
+
+  // Keep only entries within the window
+  const filteredStates: SentenceStateMap = {};
+  for (const [sentenceId, state] of stateEntries) {
+    const index = extractSentenceIndex(sentenceId);
+    if (index !== null && index >= minIndex && index <= maxIndex) {
+      filteredStates[sentenceId] = state;
+    }
+  }
+
+  return filteredStates;
+}
+
 export const useSentenceStateStore = create<SentenceStateStoreState & SentenceStateStoreActions>()(
   (set) => ({
     // Initial state (ephemeral - not persisted)
@@ -221,13 +263,19 @@ export const useSentenceStateStore = create<SentenceStateStoreState & SentenceSt
     asrCompletedIds: new Set<string>(),
 
     // Actions
-    setSentenceState: (sentenceId, state) => set((prev) => ({
-      sentenceStates: { ...prev.sentenceStates, [sentenceId]: state }
-    })),
+    setSentenceState: (sentenceId, state) => set((prev) => {
+      const newStates = { ...prev.sentenceStates, [sentenceId]: state };
+      const currentSentenceIndex = useNavigationStore.getState().currentSentenceIndex;
+      const evictedStates = evictOldSentenceStates(newStates, currentSentenceIndex);
+      return { sentenceStates: evictedStates };
+    }),
 
-    setSentenceStates: (states) => set((prev) => ({
-      sentenceStates: { ...prev.sentenceStates, ...states }
-    })),
+    setSentenceStates: (states) => set((prev) => {
+      const newStates = { ...prev.sentenceStates, ...states };
+      const currentSentenceIndex = useNavigationStore.getState().currentSentenceIndex;
+      const evictedStates = evictOldSentenceStates(newStates, currentSentenceIndex);
+      return { sentenceStates: evictedStates };
+    }),
 
     clearSentenceStates: () => set({ sentenceStates: {} }),
 

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { ParsedBook } from '@/lib/epub';
-import { getBookStorage } from '@/lib/storage';
+import { getBookStorage } from '@/lib/storage/bookStorage';
 
 export interface StoredBook {
   id: string;
@@ -28,6 +28,22 @@ interface LibraryState {
   addBookToDB: (book: ParsedBook) => Promise<void>;
 }
 
+function toStoredBook(book: ParsedBook): StoredBook {
+  return {
+    id: book.id,
+    title: book.title,
+    author: book.author,
+    cover: book.cover,
+    addedAt: Date.now(),
+    lastReadAt: Date.now(),
+    progress: 0
+  };
+}
+
+function upsertBook(books: StoredBook[], newBook: StoredBook): StoredBook[] {
+  return [...books.filter(b => b.id !== newBook.id), newBook];
+}
+
 export const useLibraryStore = create<LibraryState>()(
   persist(
     (set, get) => ({
@@ -35,18 +51,9 @@ export const useLibraryStore = create<LibraryState>()(
       currentBookId: null,
 
       addBook: (book: ParsedBook) => {
-        const storedBook: StoredBook = {
-          id: book.id,
-          title: book.title,
-          author: book.author,
-          cover: book.cover,
-          addedAt: Date.now(),
-          lastReadAt: Date.now(),
-          progress: 0
-        };
-
+        const storedBook = toStoredBook(book);
         set((state) => ({
-          books: [...state.books.filter(b => b.id !== book.id), storedBook]
+          books: upsertBook(state.books, storedBook)
         }));
       },
 
@@ -92,8 +99,9 @@ export const useLibraryStore = create<LibraryState>()(
             const mergedBooks = [...dbBooks];
 
             // Add any books from localStorage that aren't in IndexedDB
+            const dbBookIds = new Set(dbBooks.map(b => b.id));
             for (const book of existingBooks) {
-              if (!dbBooks.find(b => b.id === book.id)) {
+              if (!dbBookIds.has(book.id)) {
                 mergedBooks.push(book);
               }
             }
@@ -110,19 +118,9 @@ export const useLibraryStore = create<LibraryState>()(
           const storage = getBookStorage();
           await storage.saveBook(book);
 
-          // Update the book in the store if it exists
-          const storedBook: StoredBook = {
-            id: book.id,
-            title: book.title,
-            author: book.author,
-            cover: book.cover,
-            addedAt: Date.now(),
-            lastReadAt: Date.now(),
-            progress: 0
-          };
-
+          const storedBook = toStoredBook(book);
           set((state) => ({
-            books: [...state.books.filter(b => b.id !== book.id), storedBook]
+            books: upsertBook(state.books, storedBook)
           }));
         } catch (err) {
           console.error('Failed to save book to IndexedDB:', err);

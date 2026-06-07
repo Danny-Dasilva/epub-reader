@@ -24,13 +24,13 @@ export class BookStorage {
 
     const db = await getDB();
 
-    // Compress chapters (largest data)
+    // Compress chapters and TOC in parallel (independent operations)
     const chaptersJson = JSON.stringify(book.chapters);
-    const chaptersCompressed = await compress(chaptersJson);
-
-    // Compress TOC
     const tocJson = JSON.stringify(book.toc);
-    const tocCompressed = await compress(tocJson);
+    const [chaptersCompressed, tocCompressed] = await Promise.all([
+      compress(chaptersJson),
+      compress(tocJson),
+    ]);
 
     // Convert cover base64 to Blob if it exists
     let coverBlob: Blob | null = null;
@@ -80,12 +80,12 @@ export class BookStorage {
         return null;
       }
 
-      // Decompress chapters
-      const chaptersJson = await decompress(record.chaptersCompressed);
+      // Decompress chapters and TOC in parallel (independent operations)
+      const [chaptersJson, tocJson] = await Promise.all([
+        decompress(record.chaptersCompressed),
+        decompress(record.tocCompressed),
+      ]);
       const chapters = JSON.parse(chaptersJson) as Chapter[];
-
-      // Decompress TOC
-      const tocJson = await decompress(record.tocCompressed);
       const toc = JSON.parse(tocJson) as TOCItem[];
 
       // Convert Blob back to data URL
@@ -140,8 +140,9 @@ export class BookStorage {
 
     try {
       const db = await getDB();
-      const record = await db.get('books', id);
-      return !!record;
+      // Use getKey to check existence without loading the full record (avoids reading compressed data)
+      const key = await db.getKey('books', id);
+      return key !== undefined;
     } catch (err) {
       console.error('Failed to check book existence:', err);
       return false;

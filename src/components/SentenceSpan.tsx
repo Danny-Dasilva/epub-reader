@@ -1,7 +1,7 @@
 'use client';
 
 import { memo, useMemo } from 'react';
-import { Sentence, FormattingSpan, FormattingType } from '@/lib/epub';
+import { Sentence, FormattingSpan, FormattingType } from '@/lib/epub/types';
 import { SentenceAudioState, TimestampSource } from '@/store/sentenceStateStore';
 
 interface SentenceSpanProps {
@@ -20,6 +20,9 @@ interface WordPart {
   formatting: Set<FormattingType>;
 }
 
+// Hoisted empty set to avoid allocating per word part in the no-formatting fast path
+const EMPTY_FORMATTING = new Set<FormattingType>();
+
 /**
  * Split text into words/whitespace with formatting information
  *
@@ -37,7 +40,7 @@ function splitWordsWithFormatting(
     return parts.map(part => ({
       text: part,
       isWhitespace: part.trim().length === 0,
-      formatting: new Set<FormattingType>()
+      formatting: EMPTY_FORMATTING
     }));
   }
 
@@ -108,28 +111,9 @@ export const SentenceSpan = memo(function SentenceSpan({
     return splitWordsWithFormatting(sentence.text, sentence.formatting);
   }, [sentence.text, sentence.formatting]);
 
-  // Build CSS class based on state
-  const stateClass = useMemo(() => {
-    switch (state) {
-      case 'ready':
-        return 'sentence-ready';
-      case 'preloading':
-        return 'sentence-preloading';
-      case 'playing':
-        return 'sentence-playing';
-      case 'played':
-        return 'sentence-played';
-      case 'error':
-        return 'sentence-error';
-      default:
-        return '';
-    }
-  }, [state]);
-
-  // Memoize the ASR class suffix to avoid string concatenation on every word
-  const asrClassSuffix = useMemo(() => {
-    return timestampSource === 'asr' ? ' asr-accurate' : '';
-  }, [timestampSource]);
+  // Simple expressions - no need for useMemo
+  const stateClass = state ? `sentence-${state}` : '';
+  const asrClassSuffix = timestampSource === 'asr' ? ' asr-accurate' : '';
 
   // Memoize word class computation function
   // - spoken: already read (gray)

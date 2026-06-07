@@ -5,41 +5,37 @@
 
 import { FormattingSpan, FormattingType, BlockBoundary, BlockType } from './types';
 
+const DASH_ELLIPSES_PATTERN = /--|—|–|;|:|''| \. \. \. |\.\.\. |…/g;
+const SMART_APOSTROPHE_PATTERN = /['']/g;
+const SMART_QUOTES_PATTERN = /[""«»]/g;
+const SPECIAL_CHARS_PATTERN = /[◇\[\]]/g;
+const ASTERISK_PATTERN = /\*/g;
+const AMPERSAND_PATTERN = /&/g;
+const NEWLINE_PATTERN = /\n/g;
+const PUNCTUATION_SPACING_PATTERN = / ([,\.!\?])/g;
+const WHITESPACE_PATTERN = /\s+/g;
+
 /**
  * Clean text while preserving boundary whitespace
  * Unlike cleanText() from textExtractor, this doesn't trim leading/trailing spaces
  * which is important for proper word separation when concatenating text nodes
  */
 function cleanTextPreserveWhitespace(text: string): string {
-  // Check for leading/trailing whitespace before cleaning
-  const hadLeadingSpace = /^\s/.test(text);
-  const hadTrailingSpace = /\s$/.test(text);
+  const hadLeadingSpace = LEADING_WHITESPACE_PATTERN.test(text);
+  const hadTrailingSpace = TRAILING_WHITESPACE_PATTERN.test(text);
 
-  // Apply all the same transformations as cleanText
   let cleaned = text
-    // Replace dashes, semicolons, colons, double quotes, ellipses → comma
-    .replace(/--|—|–|;|:|''| \. \. \. |\.\.\. |…/g, ', ')
-    // Normalize smart quotes (apostrophes)
-    .replace(/['']/g, "'")
-    // Normalize smart quotes (double quotes)
-    .replace(/[""«»]/g, '"')
-    // Remove special chars
-    .replace(/[◇\[\]]/g, '')
-    // Replace asterisk with space
-    .replace(/\*/g, ' ')
-    // Replace ampersand
-    .replace(/&/g, ' and ')
-    // Normalize newlines
-    .replace(/\n/g, ' ')
-    // Fix spacing around punctuation
-    .replace(/ ([,\.!\?])/g, '$1')
-    // Normalize multiple spaces to single
-    .replace(/\s+/g, ' ')
-    // Trim, then restore boundary whitespace
+    .replace(DASH_ELLIPSES_PATTERN, ', ')
+    .replace(SMART_APOSTROPHE_PATTERN, "'")
+    .replace(SMART_QUOTES_PATTERN, '"')
+    .replace(SPECIAL_CHARS_PATTERN, '')
+    .replace(ASTERISK_PATTERN, ' ')
+    .replace(AMPERSAND_PATTERN, ' and ')
+    .replace(NEWLINE_PATTERN, ' ')
+    .replace(PUNCTUATION_SPACING_PATTERN, '$1')
+    .replace(WHITESPACE_PATTERN, ' ')
     .trim();
 
-  // Restore single space at boundaries if original had whitespace
-  // This preserves word separation when text nodes are concatenated
   if (hadLeadingSpace && cleaned.length > 0) {
     cleaned = ' ' + cleaned;
   }
@@ -50,12 +46,10 @@ function cleanTextPreserveWhitespace(text: string): string {
   return cleaned;
 }
 
-// HTML tags to remove (blacklist from epub2tts.py)
 const BLACKLIST_TAGS = new Set([
   'noscript', 'header', 'head', 'meta', 'input', 'script', 'style', 'nav', 'footer'
 ]);
 
-// Inline formatting tags
 const FORMATTING_TAGS: Record<string, FormattingType> = {
   'em': 'italic',
   'i': 'italic',
@@ -64,7 +58,6 @@ const FORMATTING_TAGS: Record<string, FormattingType> = {
   'u': 'underline',
 };
 
-// Block-level tags
 const BLOCK_TAGS: Record<string, BlockType> = {
   'p': 'paragraph',
   'div': 'paragraph',
@@ -77,6 +70,13 @@ const BLOCK_TAGS: Record<string, BlockType> = {
   'h5': 'heading',
   'h6': 'heading',
 };
+
+const HEADING_LEVEL_PATTERN = /^h(\d)$/i;
+const FOOTNOTE_LINK_PATTERN = /^[\d\[\]()]+$/;
+const FOOTNOTE_NUMBER_PATTERN = /^\d+$/;
+const LEADING_WHITESPACE_PATTERN = /^\s/;
+const TRAILING_WHITESPACE_PATTERN = /\s$/;
+const WORD_CHAR_START_PATTERN = /^[\w'''"]/;
 
 export interface ExtractionResult {
   plainText: string;
@@ -101,7 +101,7 @@ interface ExtractorState {
  * Get heading level from tag name
  */
 function getHeadingLevel(tagName: string): number {
-  const match = tagName.match(/^h(\d)$/i);
+  const match = tagName.match(HEADING_LEVEL_PATTERN);
   return match ? parseInt(match[1], 10) : 1;
 }
 
@@ -113,19 +113,16 @@ function shouldSkipNode(node: Node): boolean {
     const el = node as Element;
     const tagName = el.tagName.toLowerCase();
 
-    // Skip blacklisted tags
     if (BLACKLIST_TAGS.has(tagName)) return true;
 
-    // Skip footnote links (links that are just numbers)
     if (tagName === 'a') {
       const text = el.textContent || '';
-      if (/^[\d\[\]()]+$/.test(text.trim())) return true;
+      if (FOOTNOTE_LINK_PATTERN.test(text.trim())) return true;
     }
 
-    // Skip superscript numbers (usually footnotes)
     if (tagName === 'sup') {
       const text = el.textContent || '';
-      if (/^\d+$/.test(text.trim())) return true;
+      if (FOOTNOTE_NUMBER_PATTERN.test(text.trim())) return true;
     }
   }
 
@@ -219,13 +216,10 @@ function processNode(node: Node, state: ExtractorState): void {
       const prevTag = (prevChild as Element).tagName.toLowerCase();
       const currTag = (child as Element).tagName.toLowerCase();
 
-      // Both are inline formatting tags with no whitespace between them
       if (FORMATTING_TAGS[prevTag] && FORMATTING_TAGS[currTag]) {
-        // Check if text doesn't already end with whitespace
-        if (state.text.length > 0 && !/\s$/.test(state.text)) {
-          // Check if current element starts with a word character
+        if (state.text.length > 0 && !TRAILING_WHITESPACE_PATTERN.test(state.text)) {
           const currText = (child as Element).textContent || '';
-          if (currText.length > 0 && /^[\w''"]/.test(currText)) {
+          if (currText.length > 0 && WORD_CHAR_START_PATTERN.test(currText)) {
             state.text += ' ';
             state.position += 1;
           }
@@ -233,17 +227,14 @@ function processNode(node: Node, state: ExtractorState): void {
       }
     }
 
-    // Also handle case where inline element follows text node that doesn't end with space
-    // and the inline element starts a new word
     if (prevChild && prevChild.nodeType === Node.TEXT_NODE && child.nodeType === Node.ELEMENT_NODE) {
       const currTag = (child as Element).tagName.toLowerCase();
       if (FORMATTING_TAGS[currTag]) {
         const prevText = prevChild.textContent || '';
         const currText = (child as Element).textContent || '';
-        // If previous text doesn't end with whitespace and current starts with word char
-        if (prevText.length > 0 && !/\s$/.test(prevText) &&
-            currText.length > 0 && /^[\w]/.test(currText) &&
-            state.text.length > 0 && !/\s$/.test(state.text)) {
+        if (prevText.length > 0 && !TRAILING_WHITESPACE_PATTERN.test(prevText) &&
+            currText.length > 0 && WORD_CHAR_START_PATTERN.test(currText) &&
+            state.text.length > 0 && !TRAILING_WHITESPACE_PATTERN.test(state.text)) {
           state.text += ' ';
           state.position += 1;
         }
@@ -377,6 +368,10 @@ export function extractTextWithFormatting(html: string): ExtractionResult {
   };
 }
 
+const NUMERIC_ONLY_PATTERN = /^\d+$/;
+const TITLE_WHITESPACE_PATTERN = /\s+/g;
+const TITLE_NEWLINE_PATTERN = /\n/g;
+
 /**
  * Extract chapter title from HTML content
  * (Re-exported from original for compatibility)
@@ -391,10 +386,10 @@ export function extractChapterTitleFromHTML(html: string): string | null {
     const element = doc.querySelector(tag);
     if (element?.textContent?.trim()) {
       const title = element.textContent.trim();
-      if (!/^\d+$/.test(title) && title.length > 0) {
+      if (!NUMERIC_ONLY_PATTERN.test(title) && title.length > 0) {
         return title
-          .replace(/\s+/g, ' ')
-          .replace(/\n/g, ' ')
+          .replace(TITLE_WHITESPACE_PATTERN, ' ')
+          .replace(TITLE_NEWLINE_PATTERN, ' ')
           .trim();
       }
     }

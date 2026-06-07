@@ -2,6 +2,9 @@ import tokenizer from 'sbd';
 import { Sentence, FormattingSpan, BlockBoundary } from './types';
 import { preprocessText } from '../tts/textPreprocessor';
 
+// Hoisted regex - used in getWordCount/estimateDuration hot paths
+const WHITESPACE_SPLIT_PATTERN = /\s+/;
+
 /**
  * Tokenize text into sentences using the sbd (Sentence Boundary Detection) library.
  * This library handles abbreviations like "Dr.", "M.D.", "etc." correctly
@@ -126,7 +129,7 @@ function splitAtBreakPoints(text: string, maxLength: number): string[] {
  * Get word count for a sentence (for timing estimation)
  */
 export function getWordCount(text: string): number {
-  return text.split(/\s+/).filter(w => w.length > 0).length;
+  return text.split(WHITESPACE_SPLIT_PATTERN).filter(w => w.length > 0).length;
 }
 
 /**

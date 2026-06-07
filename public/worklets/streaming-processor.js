@@ -5,7 +5,7 @@
  */
 
 class StreamingProcessor extends AudioWorkletProcessor {
-  constructor() {
+  constructor(options) {
     super();
 
     // Ring buffer for audio samples (10 second capacity)
@@ -17,7 +17,9 @@ class StreamingProcessor extends AudioWorkletProcessor {
     this.isPaused = false;
 
     // Playback rate support (1.0 = normal, 2.0 = double speed)
-    this.playbackRate = 1.0;
+    // Read initial rate from processorOptions to prevent race condition
+    // where process() runs before setPlaybackRate message is received
+    this.playbackRate = options?.processorOptions?.initialPlaybackRate ?? 1.0;
     // Track samples consumed for accurate time reporting
     this.samplesConsumed = 0;
 
@@ -31,14 +33,28 @@ class StreamingProcessor extends AudioWorkletProcessor {
     this.isComplete = false;
     this.hasEnded = false;  // Guard to send 'ended' only once
 
+    // FIX #4: Generation counter to ignore stale chunks after reset
+    this.generation = 0;
+
     // Handle messages from main thread
     this.port.onmessage = (e) => {
+      // FIX #4 (P1-6): Validate generation for ALL messages except reset
+      if (e.data.type !== 'reset' &&
+          e.data.generation !== undefined &&
+          e.data.generation !== this.generation) {
+        return; // Silently drop stale message
+      }
+
       if (e.data.type === 'chunk') {
         this.appendChunk(e.data.audio);
       } else if (e.data.type === 'complete') {
         this.isComplete = true;
       } else if (e.data.type === 'reset') {
-        this.reset();
+        // FIX #4: Store new generation from reset message
+        if (e.data.generation !== undefined) {
+          this.generation = e.data.generation;
+        }
+        this.reset(e.data.playbackRate);
       } else if (e.data.type === 'pause') {
         this.isPaused = true;
       } else if (e.data.type === 'resume') {
@@ -90,7 +106,7 @@ class StreamingProcessor extends AudioWorkletProcessor {
     }
   }
 
-  reset() {
+  reset(playbackRate = null) {
     // Compact buffer back to initial size if it grew (Fix #3: memory leak)
     if (this.buffer.length > this.initialBufferSize) {
       this.buffer = new Float32Array(this.initialBufferSize);
@@ -103,7 +119,12 @@ class StreamingProcessor extends AudioWorkletProcessor {
     this.hasEnded = false;  // Reset the ended guard for new sentence
     this.isPaused = false;
     this.lastProgressTime = 0;  // Reset progress throttle
-    // Note: playbackRate is intentionally preserved across resets
+    // Set playbackRate atomically during reset if provided
+    // This prevents race condition where chunks arrive before setPlaybackRate message
+    if (playbackRate !== null && playbackRate !== undefined) {
+      this.playbackRate = Math.max(0.5, Math.min(2.0, playbackRate));
+    }
+    // Otherwise playbackRate is preserved across resets
   }
 
   process(inputs, outputs) {

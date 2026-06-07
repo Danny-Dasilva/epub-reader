@@ -47,8 +47,10 @@ fi
 echo ""
 echo "Downloading TTS models from Hugging Face..."
 
-# Supertonic models: https://huggingface.co/Supertone/supertonic
-HF_BASE="https://huggingface.co/Supertone/supertonic/resolve/main/onnx"
+# Supertonic 2 models: https://huggingface.co/Supertone/supertonic-2
+# (Chosen over v3 for speed: v2's denoiser is ~3.7x faster per step. v2 is multilingual
+#  en/ko/es/pt/fr and uses the same <lang> text tokens as v3.)
+HF_BASE="https://huggingface.co/Supertone/supertonic-2/resolve/main/onnx"
 
 # Model files to download
 TTS_FILES=(
@@ -77,7 +79,7 @@ echo "  ✓ TTS models downloaded"
 echo ""
 echo "Downloading voice styles..."
 
-HF_VOICES="https://huggingface.co/Supertone/supertonic/resolve/main/voice_styles"
+HF_VOICES="https://huggingface.co/Supertone/supertonic-2/resolve/main/voice_styles"
 
 VOICE_FILES=("M1.json" "M2.json" "M3.json" "M4.json" "M5.json" "F1.json" "F2.json" "F3.json" "F4.json" "F5.json")
 

@@ -44,3 +44,7 @@ next-env.d.ts
 /public/models/
 /public/onnx/
 /public/voice_styles/
+.claude
+.codex
+.tldrignore
+thoughts/

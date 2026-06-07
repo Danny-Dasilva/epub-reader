@@ -5,9 +5,15 @@ import { useRouter } from 'next/navigation';
 import { parseEpub } from '@/lib/epub';
 import { useLibraryStore, StoredBook } from '@/store/libraryStore';
 import { usePlaybackStore } from '@/store/playbackStore';
-import { migrateFromSessionStorage } from '@/lib/storage';
+import { migrateFromSessionStorage } from '@/lib/storage/migration';
 import { useLastReadBook } from '@/hooks/useLastReadBook';
-import { ContinueReadingCard } from '@/components/ContinueReadingCard';
+import dynamic from 'next/dynamic';
+
+// Lazy-load ContinueReadingCard - only shown when user has a last-read book
+const ContinueReadingCard = dynamic(
+  () => import('@/components/ContinueReadingCard').then(mod => ({ default: mod.ContinueReadingCard })),
+  { ssr: false }
+);
 
 // Icons as inline SVGs
 const BookIcon = () => (
@@ -52,7 +58,11 @@ export default function LibraryPage() {
   const [isLibraryLoading, setIsLibraryLoading] = useState(true); // Fix #7: Loading state for IndexedDB
   const [error, setError] = useState<ParseError | null>(null);
 
-  const { books, addBook, removeBook, loadBooksFromDB, addBookToDB } = useLibraryStore();
+  const books = useLibraryStore(state => state.books);
+  const addBook = useLibraryStore(state => state.addBook);
+  const removeBook = useLibraryStore(state => state.removeBook);
+  const loadBooksFromDB = useLibraryStore(state => state.loadBooksFromDB);
+  const addBookToDB = useLibraryStore(state => state.addBookToDB);
   const enableIndexedDBStorage = usePlaybackStore(state => state.enableIndexedDBStorage);
   const lastReadBook = useLastReadBook();
 
@@ -153,7 +163,7 @@ export default function LibraryPage() {
 
       // Delete from IndexedDB if enabled
       if (enableIndexedDBStorage) {
-        const { getBookStorage } = await import('@/lib/storage');
+        const { getBookStorage } = await import('@/lib/storage/bookStorage');
         const storage = getBookStorage();
         await storage.deleteBook(bookId);
       } else {
@@ -221,7 +231,7 @@ export default function LibraryPage() {
                 ${isDragging ? 'scale-110 bg-[var(--color-gold-light)] text-[var(--color-ink)]' : ''}
               `}>
                 {isLoading ? (
-                  <div className="w-6 h-6 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                  <LoadingSpinner />
                 ) : (
                   <UploadIcon />
                 )}

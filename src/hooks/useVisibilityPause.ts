@@ -13,7 +13,6 @@ import { usePlaybackStore } from '@/store/playbackStore';
 export function useVisibilityPause() {
   const isPlaying = usePlaybackStore(state => state.isPlaying);
   const setIsPlaying = usePlaybackStore(state => state.setIsPlaying);
-  const allowBackgroundPlayback = usePlaybackStore(state => state.allowBackgroundPlayback);
   const wasPlayingBeforeHide = useRef(false);
   // Track if we caused the pause via visibility change
   const pausedByVisibility = useRef(false);
@@ -32,7 +31,8 @@ export function useVisibilityPause() {
 
   useEffect(() => {
     const handleVisibilityChange = () => {
-      // If background playback is allowed, don't pause/resume based on visibility
+      // Read at event time to avoid re-registering listener on setting change
+      const { allowBackgroundPlayback } = usePlaybackStore.getState();
       if (allowBackgroundPlayback) {
         return;
       }
@@ -57,5 +57,5 @@ export function useVisibilityPause() {
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [setIsPlaying, allowBackgroundPlayback]);
+  }, [setIsPlaying]);
 }

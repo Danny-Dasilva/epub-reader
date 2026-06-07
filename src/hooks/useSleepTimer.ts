@@ -18,6 +18,19 @@ export interface UseSleepTimerReturn {
   stopTimer: () => void;
 }
 
+/** Format remaining time as MM:SS or HH:MM:SS - pure function, no deps */
+function formatTime(ms: number): string {
+  const totalSeconds = Math.ceil(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  }
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
 export function useSleepTimer(options: UseSleepTimerOptions): UseSleepTimerReturn {
   const { onTimerExpired, isPlaying, onChapterEnd } = options;
 
@@ -33,19 +46,7 @@ export function useSleepTimer(options: UseSleepTimerOptions): UseSleepTimerRetur
   const lastTickRef = useRef<number>(Date.now());
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Format remaining time as MM:SS or HH:MM:SS
-  const formatTime = useCallback((ms: number): string => {
-    const totalSeconds = Math.ceil(ms / 1000);
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = totalSeconds % 60;
-
-    if (hours > 0) {
-      return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-    }
-    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-  }, []);
-
+  // Derive formatted time during render (no effect needed)
   const remainingFormatted = selectedPreset === 'chapter_end'
     ? 'Chapter End'
     : formatTime(remainingMs);
@@ -101,14 +102,6 @@ export function useSleepTimer(options: UseSleepTimerOptions): UseSleepTimerRetur
       stopTimer();
     }
   }, [isActive, remainingMs, selectedPreset, onTimerExpired, stopTimer]);
-
-  // Handle chapter end mode - called externally when chapter ends
-  useEffect(() => {
-    if (isActive && selectedPreset === 'chapter_end' && onChapterEnd) {
-      // Chapter end callback is registered but we don't auto-trigger it here
-      // The parent component needs to call this when chapter actually ends
-    }
-  }, [isActive, selectedPreset, onChapterEnd]);
 
   return {
     isActive,

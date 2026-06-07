@@ -10,14 +10,17 @@ import type {
   WorkerCompleteResponse,
   WorkerProgressResponse,
   WorkerLoadingResponse,
-  WorkerChunkResponse
+  WorkerChunkResponse,
+  WorkerDurationResponse
 } from './tts.worker';
+import { WordTimestamp } from '../asr/types';
 
 export interface TTSSynthesisResult {
   wav: Float32Array;
   wavBuffer: ArrayBuffer;  // Optimization #3: Pre-encoded WAV buffer from worker
   duration: number;
   sampleRate: number;
+  wordTimestamps: WordTimestamp[];  // Word-level timestamps from TTS heuristic
 }
 
 export interface TTSSynthesisOptions {
@@ -34,6 +37,11 @@ export interface TTSStreamingOptions extends TTSSynthesisOptions {
 
 export type TTSLoadProgressCallback = (modelName: string, current: number, total: number) => void;
 
+export interface TTSDurationResult {
+  duration: number;
+  wordTimestamps: WordTimestamp[];
+}
+
 interface PendingRequest {
   resolve: (result: TTSSynthesisResult) => void;
   reject: (error: Error) => void;
@@ -43,9 +51,15 @@ interface PendingRequest {
   isStreaming?: boolean;  // Track if this is a streaming request
 }
 
+interface PendingDurationRequest {
+  resolve: (result: TTSDurationResult) => void;
+  reject: (error: Error) => void;
+}
+
 export class TTSWorkerManager {
   private workers: Worker[] = [];
   private workerBusy: boolean[] = [];
+  private pendingDurationRequests: Map<string, PendingDurationRequest> = new Map();
   private workerReady: boolean[] = [];
   private numWorkers = 1;
   private pendingRequests: Map<string, PendingRequest> = new Map();
@@ -172,7 +186,8 @@ export class TTSWorkerManager {
               wav: new Float32Array(0),
               wavBuffer: new ArrayBuffer(0),
               duration: 0,
-              sampleRate: 44100
+              sampleRate: 44100,
+              wordTimestamps: []  // Streaming doesn't include timestamps in chunk response
             });
             this.pendingRequests.delete(chunkMsg.id);
             // Mark this worker as not busy
@@ -191,13 +206,27 @@ export class TTSWorkerManager {
             wav: completeMsg.wav,
             wavBuffer: completeMsg.wavBuffer,  // Optimization #3: Pre-encoded WAV buffer
             duration: completeMsg.duration,
-            sampleRate: completeMsg.sampleRate
+            sampleRate: completeMsg.sampleRate,
+            wordTimestamps: completeMsg.wordTimestamps  // Word-level timestamps from TTS heuristic
           });
           this.pendingRequests.delete(completeMsg.id);
         }
         // Mark this worker as not busy
         this.workerBusy[workerIndex] = false;
         this.processNextInQueue();
+        break;
+      }
+
+      case 'duration': {
+        const durationMsg = message as WorkerDurationResponse;
+        const pending = this.pendingDurationRequests.get(durationMsg.id);
+        if (pending) {
+          pending.resolve({
+            duration: durationMsg.duration,
+            wordTimestamps: durationMsg.wordTimestamps
+          });
+          this.pendingDurationRequests.delete(durationMsg.id);
+        }
         break;
       }
 
@@ -215,14 +244,21 @@ export class TTSWorkerManager {
 
       case 'error': {
         if (message.id) {
+          // Check synthesis requests
           const pending = this.pendingRequests.get(message.id);
           if (pending) {
             pending.reject(new Error(message.message));
             this.pendingRequests.delete(message.id);
+            // Mark this worker as not busy
+            this.workerBusy[workerIndex] = false;
+            this.processNextInQueue();
           }
-          // Mark this worker as not busy
-          this.workerBusy[workerIndex] = false;
-          this.processNextInQueue();
+          // Check duration requests
+          const pendingDuration = this.pendingDurationRequests.get(message.id);
+          if (pendingDuration) {
+            pendingDuration.reject(new Error(message.message));
+            this.pendingDurationRequests.delete(message.id);
+          }
         } else {
           // Global error (e.g., init failure)
           this.readyReject?.(new Error(message.message));
@@ -297,8 +333,9 @@ export class TTSWorkerManager {
 
     const promise = new Promise<TTSSynthesisResult>((resolve, reject) => {
       // Set up abort handler
+      let abortHandler: (() => void) | null = null;
       if (signal) {
-        const abortHandler = () => {
+        abortHandler = () => {
           this.cancel(requestId);
           // Remove from queue if not yet processing
           this.requestQueue = this.requestQueue.filter(r => r.id !== requestId);
@@ -319,11 +356,25 @@ export class TTSWorkerManager {
       // Find an available worker
       const workerIndex = this.findAvailableWorker();
 
+      // Wrap resolve/reject to clean up abort handler
+      const wrappedResolve = (result: TTSSynthesisResult) => {
+        if (abortHandler && signal) {
+          signal.removeEventListener('abort', abortHandler);
+        }
+        resolve(result);
+      };
+      const wrappedReject = (error: Error) => {
+        if (abortHandler && signal) {
+          signal.removeEventListener('abort', abortHandler);
+        }
+        reject(error);
+      };
+
       if (workerIndex === -1) {
         // All workers busy, queue the request
         this.pendingRequests.set(requestId, {
-          resolve,
-          reject,
+          resolve: wrappedResolve,
+          reject: wrappedReject,
           onProgress: options.onProgress,
           onChunk: options.onChunk,
           workerIndex: -1,
@@ -334,8 +385,8 @@ export class TTSWorkerManager {
         // Worker available, send immediately
         this.workerBusy[workerIndex] = true;
         this.pendingRequests.set(requestId, {
-          resolve,
-          reject,
+          resolve: wrappedResolve,
+          reject: wrappedReject,
           onProgress: options.onProgress,
           onChunk: options.onChunk,
           workerIndex,
@@ -369,8 +420,9 @@ export class TTSWorkerManager {
 
     const promise = new Promise<TTSSynthesisResult>((resolve, reject) => {
       // Set up abort handler
+      let abortHandler: (() => void) | null = null;
       if (signal) {
-        const abortHandler = () => {
+        abortHandler = () => {
           this.cancel(requestId);
           // Remove from queue if not yet processing
           this.requestQueue = this.requestQueue.filter(r => r.id !== requestId);
@@ -390,11 +442,25 @@ export class TTSWorkerManager {
       // Find an available worker
       const workerIndex = this.findAvailableWorker();
 
+      // Wrap resolve/reject to clean up abort handler
+      const wrappedResolve = (result: TTSSynthesisResult) => {
+        if (abortHandler && signal) {
+          signal.removeEventListener('abort', abortHandler);
+        }
+        resolve(result);
+      };
+      const wrappedReject = (error: Error) => {
+        if (abortHandler && signal) {
+          signal.removeEventListener('abort', abortHandler);
+        }
+        reject(error);
+      };
+
       if (workerIndex === -1) {
         // All workers busy, queue the request
         this.pendingRequests.set(requestId, {
-          resolve,
-          reject,
+          resolve: wrappedResolve,
+          reject: wrappedReject,
           onProgress: options.onProgress,
           workerIndex: -1 // Will be set when dequeued
         });
@@ -403,8 +469,8 @@ export class TTSWorkerManager {
         // Worker available, send immediately
         this.workerBusy[workerIndex] = true;
         this.pendingRequests.set(requestId, {
-          resolve,
-          reject,
+          resolve: wrappedResolve,
+          reject: wrappedReject,
           onProgress: options.onProgress,
           workerIndex
         });
@@ -416,15 +482,57 @@ export class TTSWorkerManager {
   }
 
   /**
+   * Predict duration and get word timestamps without full synthesis.
+   * Used for streaming path to get accurate timestamps before audio starts.
+   */
+  async predictDuration(
+    text: string,
+    options: { speed?: number; preprocessedText?: string } = {}
+  ): Promise<TTSDurationResult> {
+    if (!this.isReady || this.workers.length === 0) {
+      throw new Error('Worker not initialized');
+    }
+
+    const requestId = `dur_${++this.requestIdCounter}_${Date.now()}`;
+
+    const promise = new Promise<TTSDurationResult>((resolve, reject) => {
+      this.pendingDurationRequests.set(requestId, { resolve, reject });
+
+      const message: WorkerInMessage = {
+        type: 'predictDuration',
+        id: requestId,
+        text,
+        speed: options.speed ?? 1.0,
+        preprocessedText: options.preprocessedText
+      };
+
+      // Duration prediction doesn't block synthesis workers
+      // Just use the first available worker
+      this.workers[0].postMessage(message);
+    });
+
+    return promise;
+  }
+
+  /**
    * Cancel a specific synthesis request
    */
   cancel(requestId: string): void {
     const pending = this.pendingRequests.get(requestId);
-    if (pending && pending.workerIndex >= 0) {
-      // Send cancel to the worker handling this request
-      const worker = this.workers[pending.workerIndex];
-      if (worker) {
-        worker.postMessage({ type: 'cancel', id: requestId } as WorkerInMessage);
+    if (pending) {
+      // FIX #5: Immediately remove from pending to prevent stale chunk processing
+      // This ensures any chunks arriving after cancel are ignored
+      this.pendingRequests.delete(requestId);
+
+      if (pending.workerIndex >= 0) {
+        // Send cancel to the worker handling this request
+        const worker = this.workers[pending.workerIndex];
+        if (worker) {
+          worker.postMessage({ type: 'cancel', id: requestId } as WorkerInMessage);
+        }
+        // Mark worker as not busy since we've already cleaned up the request
+        this.workerBusy[pending.workerIndex] = false;
+        this.processNextInQueue();
       }
     }
   }
@@ -442,6 +550,12 @@ export class TTSWorkerManager {
       }
     }
     this.requestQueue = [];
+
+    // Clean up duration requests too
+    this.pendingDurationRequests.forEach(pending => {
+      pending.reject(new DOMException('Cancelled', 'AbortError'));
+    });
+    this.pendingDurationRequests.clear();
 
     // Cancel current processing on all workers
     for (const worker of this.workers) {
@@ -520,14 +634,12 @@ export class TTSWorkerManager {
 // Singleton instance
 let sharedManager: TTSWorkerManager | null = null;
 
-export function getSharedTTSWorkerManager(): TTSWorkerManager {
+/**
+ * Get the shared TTS worker manager instance
+ */
+export function getTTSWorkerManager(): TTSWorkerManager {
   if (!sharedManager) {
     sharedManager = new TTSWorkerManager();
   }
   return sharedManager;
-}
-
-export function disposeTTSWorkerManager(): void {
-  sharedManager?.dispose();
-  sharedManager = null;
 }

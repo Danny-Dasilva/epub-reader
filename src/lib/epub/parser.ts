@@ -33,10 +33,12 @@ export class EpubParser {
     this.book = ePub(file as ArrayBuffer);
     await this.book.ready;
 
-    // Get metadata
-    const metadata = await this.book.loaded.metadata;
-    const spine = await this.book.loaded.spine;
-    const navigation = await this.book.loaded.navigation;
+    // Load metadata, spine, and navigation in parallel (independent resources)
+    const [metadata, spine, navigation] = await Promise.all([
+      this.book.loaded.metadata,
+      this.book.loaded.spine,
+      this.book.loaded.navigation,
+    ]);
 
     // Extract cover
     const cover = await this.extractCover();
@@ -130,12 +132,13 @@ export class EpubParser {
 
         // Adjust formatting and block positions to account for title prefix
         const titleOffset = titlePrefix.length;
-        const adjustedFormatting = extracted.formattingSpans.map(span => ({
+        const { formattingSpans, blockBoundaries } = extracted;
+        const adjustedFormatting = formattingSpans.map(span => ({
           ...span,
           startIndex: span.startIndex + titleOffset,
           endIndex: span.endIndex + titleOffset
         }));
-        const adjustedBlocks = extracted.blockBoundaries.map(block => ({
+        const adjustedBlocks = blockBoundaries.map(block => ({
           ...block,
           startIndex: block.startIndex + titleOffset,
           endIndex: block.endIndex + titleOffset

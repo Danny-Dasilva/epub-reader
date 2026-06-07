@@ -6,24 +6,32 @@
 
 /**
  * Check if AudioWorklet is supported in the current environment
+ * js-cache-function-results: Result cached since browser capabilities don't change at runtime
  */
+let _audioWorkletSupported: boolean | null = null;
 export function isAudioWorkletSupported(): boolean {
-  if (typeof window === 'undefined') return false;
-  if (typeof AudioContext === 'undefined') return false;
+  if (_audioWorkletSupported !== null) return _audioWorkletSupported;
+
+  if (typeof window === 'undefined' || typeof AudioContext === 'undefined') {
+    _audioWorkletSupported = false;
+    return false;
+  }
 
   // Check if we're in a secure context (required for AudioWorklet)
   if (!window.isSecureContext) {
     console.warn('[StreamingAudioWorklet] AudioWorklet requires a secure context (HTTPS or localhost)');
+    _audioWorkletSupported = false;
     return false;
   }
 
   // Check if AudioWorklet is available
   try {
     const testContext = new AudioContext();
-    const supported = testContext.audioWorklet !== undefined;
+    _audioWorkletSupported = testContext.audioWorklet !== undefined;
     testContext.close();
-    return supported;
+    return _audioWorkletSupported;
   } catch {
+    _audioWorkletSupported = false;
     return false;
   }
 }
@@ -35,14 +43,17 @@ export class StreamingAudioWorklet {
   private isInitialized = false;
   private isPaused = false;
   private playbackRate = 1.0;
+  // FIX #4: Session generation counter to prevent stale chunk processing
+  private generation = 0;
   private onStarted: (() => void) | null = null;
   private onEnded: ((samplesConsumed?: number) => void) | null = null;
   private onProgress: ((progress: number, samplesConsumed?: number) => void) | null = null;
 
-  async initialize(audioContext: AudioContext): Promise<void> {
+  async initialize(audioContext: AudioContext, initialPlaybackRate: number = 1.0): Promise<void> {
     if (this.isInitialized) return;
 
     this.audioContext = audioContext;
+    this.playbackRate = initialPlaybackRate;
 
     // Check if AudioWorklet is supported
     if (!audioContext.audioWorklet) {
@@ -61,8 +72,11 @@ export class StreamingAudioWorklet {
       throw error;
     }
 
-    // Create worklet node
-    this.workletNode = new AudioWorkletNode(audioContext, 'streaming-processor');
+    // Create worklet node with initial playback rate via processorOptions
+    // This eliminates race condition where process() runs before setPlaybackRate message
+    this.workletNode = new AudioWorkletNode(audioContext, 'streaming-processor', {
+      processorOptions: { initialPlaybackRate: this.playbackRate }
+    });
 
     // Create gain node for volume control
     this.gainNode = audioContext.createGain();
@@ -84,11 +98,7 @@ export class StreamingAudioWorklet {
     };
 
     this.isInitialized = true;
-
-    // Apply current playback rate to worklet
-    if (this.playbackRate !== 1.0) {
-      this.workletNode.port.postMessage({ type: 'setPlaybackRate', rate: this.playbackRate });
-    }
+    // NOTE: playbackRate already set via processorOptions - no async message needed
   }
 
   setCallbacks(callbacks: {
@@ -104,7 +114,11 @@ export class StreamingAudioWorklet {
   setPlaybackRate(rate: number): void {
     this.playbackRate = Math.max(0.5, Math.min(2.0, rate));
     if (this.workletNode) {
-      this.workletNode.port.postMessage({ type: 'setPlaybackRate', rate: this.playbackRate });
+      this.workletNode.port.postMessage({
+        type: 'setPlaybackRate',
+        rate: this.playbackRate,
+        generation: this.generation
+      });
     }
   }
 
@@ -137,10 +151,12 @@ export class StreamingAudioWorklet {
     // Transfer ownership directly for zero-copy performance
     // Note: After this call, the original array becomes detached and unusable
     // Caller must not access the array after calling appendChunk
+    // FIX #4: Include generation to allow processor to ignore stale chunks
     this.workletNode.port.postMessage(
       {
         type: 'chunk',
-        audio: audio
+        audio: audio,
+        generation: this.generation
       },
       [audio.buffer]
     );
@@ -151,7 +167,10 @@ export class StreamingAudioWorklet {
       throw new Error('Worklet not initialized');
     }
 
-    this.workletNode.port.postMessage({ type: 'complete' });
+    this.workletNode.port.postMessage({
+      type: 'complete',
+      generation: this.generation
+    });
   }
 
   reset(): void {
@@ -159,7 +178,30 @@ export class StreamingAudioWorklet {
       throw new Error('Worklet not initialized');
     }
 
-    this.workletNode.port.postMessage({ type: 'reset' });
+    // FIX #4: Increment generation so processor ignores stale chunks
+    this.generation++;
+    this.workletNode.port.postMessage({ type: 'reset', generation: this.generation });
+    this.isPaused = false;
+  }
+
+  /**
+   * Reset worklet with atomic playback rate setting
+   * This prevents race conditions where chunks arrive before setPlaybackRate message
+   */
+  resetWithPlaybackRate(rate: number): void {
+    if (!this.workletNode) {
+      throw new Error('Worklet not initialized');
+    }
+
+    this.playbackRate = Math.max(0.5, Math.min(2.0, rate));
+    // FIX #4: Increment generation so processor ignores stale chunks
+    this.generation++;
+    // Send playbackRate and generation inside reset message for atomic update
+    this.workletNode.port.postMessage({
+      type: 'reset',
+      playbackRate: this.playbackRate,
+      generation: this.generation
+    });
     this.isPaused = false;
   }
 
@@ -181,13 +223,19 @@ export class StreamingAudioWorklet {
 
   pause(): void {
     if (!this.workletNode) return;
-    this.workletNode.port.postMessage({ type: 'pause' });
+    this.workletNode.port.postMessage({
+      type: 'pause',
+      generation: this.generation
+    });
     this.isPaused = true;
   }
 
   resume(): void {
     if (!this.workletNode) return;
-    this.workletNode.port.postMessage({ type: 'resume' });
+    this.workletNode.port.postMessage({
+      type: 'resume',
+      generation: this.generation
+    });
     this.isPaused = false;
   }
 

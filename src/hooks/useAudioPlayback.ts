@@ -40,11 +40,13 @@ export function useAudioPlayback() {
   // Ref for stable event handler (avoids stale closures)
   const handlePlaybackEventRef = useRef<(event: PlaybackEvent) => void>(() => {});
 
-  // Navigation store
+  // Navigation store - FIX P1-2: Use direct selector instead of getter to prevent stale closures
   const currentBook = useNavigationStore(state => state.currentBook);
   const currentChapterIndex = useNavigationStore(state => state.currentChapterIndex);
   const currentSentenceIndex = useNavigationStore(state => state.currentSentenceIndex);
-  const getCurrentChapter = useNavigationStore(state => state.getCurrentChapter);
+  const currentChapter = useNavigationStore(state =>
+    state.currentBook?.chapters[state.currentChapterIndex] ?? null
+  );
   const setSentenceIndex = useNavigationStore(state => state.setSentenceIndex);
   const setChapter = useNavigationStore(state => state.setChapter);
   const nextSentence = useNavigationStore(state => state.nextSentence);
@@ -56,13 +58,11 @@ export function useAudioPlayback() {
   const audioPlaybackRate = usePlaybackStore(state => state.audioPlaybackRate);
   const enableASR = usePlaybackStore(state => state.enableASR);
   const enableLazyVoiceLoading = usePlaybackStore(state => state.enableLazyVoiceLoading);
-  const enableStreamingTTS = usePlaybackStore(state => state.enableStreamingTTS);
   const session = usePlaybackStore(state => state.session);
   const setIsPlaying = usePlaybackStore(state => state.setIsPlaying);
   const startSession = usePlaybackStore(state => state.startSession);
   const endSession = usePlaybackStore(state => state.endSession);
   const setPaused = usePlaybackStore(state => state.setPaused);
-  const updateSessionSentence = usePlaybackStore(state => state.updateSessionSentence);
 
   // TTS store
   const currentVoice = useTTSStore(state => state.currentVoice);
@@ -81,13 +81,9 @@ export function useAudioPlayback() {
   const sleepTimerPreset = useSleepTimerStore(state => state.selectedPreset);
   const stopSleepTimer = useSleepTimerStore(state => state.stopTimer);
 
-  // Fix 10: Use ref instead of state for session.sentenceId to avoid extra effect runs
-  const sessionSentenceIdRef = useRef(session.sentenceId);
-
-  // Sync ref (doesn't trigger effects)
-  useEffect(() => {
-    sessionSentenceIdRef.current = session.sentenceId;
-  }, [session.sentenceId]);
+  // Ref to track which sentence the current play session started from
+  // (distinct from playingSentenceIdRef which tracks gapless advancement)
+  const sessionSentenceIdRef = useRef<string | null>(null);
 
   // Initialize audio service
   useEffect(() => {
@@ -110,6 +106,8 @@ export function useAudioPlayback() {
           voiceStylePath: voicePath,
           preloadCount: 4,
           speed: speechRate,
+          // Supertonic 2: clean at low step counts (no clipping at 3-5). 5 = good
+          // speed/quality. (v3 needed 8 to avoid clipping but was ~3.7x slower/step.)
           totalSteps: 5,
           enableLazyVoiceLoading: useLazyLoading
         });
@@ -216,12 +214,15 @@ export function useAudioPlayback() {
 
         case 'sentenceStart':
           // Gapless mode: Audio player is advancing to next pre-scheduled sentence
-          // Update session tracking to match
+          // Update navigation state to match (single source of truth)
           if (event.sentenceId && service) {
-            updateSessionSentence(event.sentenceId);
+            // FIX Bug 2: Initialize highlight for new sentence (clears stale highlight)
+            setHighlight(event.sentenceId, null);
             service.updateGaplessPosition(event.sentenceId);
             // Update navigation state to match
-            const chapter = getCurrentChapter();
+            // Use getState() inside event handler to get fresh chapter data
+            const navState = useNavigationStore.getState();
+            const chapter = navState.currentBook?.chapters[navState.currentChapterIndex];
             if (chapter) {
               const index = chapter.sentences.findIndex(s => s.id === event.sentenceId);
               if (index !== -1) {
@@ -261,6 +262,8 @@ export function useAudioPlayback() {
             // Handle sentence advancement for non-gapless modes (streaming and legacy)
             // Moving this here prevents race condition with the play effect
             if (!isGapless) {
+              // Check store's isPlaying to respect user pause intent
+              // If user clicked pause, isPlaying will be false and we shouldn't advance
               const stillPlaying = usePlaybackStore.getState().isPlaying;
               if (stillPlaying) {
                 const hasNext = nextSentence();
@@ -273,7 +276,6 @@ export function useAudioPlayback() {
                     stopSleepTimer();
                   }
                   setIsPlaying(false);
-                  updateSessionSentence('');
                 }
                 // If hasNext, the play effect will be triggered by currentSentenceIndex change
               }
@@ -292,7 +294,6 @@ export function useAudioPlayback() {
         case 'stop':
           // Playback stopped (end of chapter or explicit stop)
           setIsPlaying(false);
-          updateSessionSentence('');
           clearAudioPosition();
           break;
 
@@ -302,7 +303,7 @@ export function useAudioPlayback() {
           break;
       }
     };
-  }, [nextSentence, setIsPlaying, setPaused, updateSessionSentence, getCurrentChapter, setSentenceIndex]);
+  }, [nextSentence, setIsPlaying, setPaused, setSentenceIndex]);
 
   // Handle play state changes - passive effect that handles pause/resume and auto-advance
   // Manual skips are handled by skipToSentence directly to avoid race conditions
@@ -310,10 +311,9 @@ export function useAudioPlayback() {
     const service = serviceRef.current;
     if (!service || !service.isReady()) return;
 
-    const chapter = getCurrentChapter();
-    if (!chapter) return;
+    if (!currentChapter) return;
 
-    const sentence = chapter.sentences[currentSentenceIndex];
+    const sentence = currentChapter.sentences[currentSentenceIndex];
     if (!sentence) return;
 
     if (isPlaying) {
@@ -328,54 +328,43 @@ export function useAudioPlayback() {
         // Already playing/preparing this sentence (skipToSentence already started it)
         // This prevents duplicate playback when clicking a sentence triggers both
         // skipToSentence AND this effect via state changes
-        service.preloadFullChapter(chapter.sentences, currentSentenceIndex + 1);
+        service.preloadFullChapter(currentChapter.sentences, currentSentenceIndex + 1);
         return;
       } else {
         // New sentence (auto-advance from sentenceEnd or initial play) - start fresh
         // In gapless mode, audio continues automatically via sentenceStart events
         // This branch is for initial play or when not in gapless mode
         if (!service.isGaplessMode()) {
-          const abortController = startSession(sentence.id, currentChapterIndex);
+          const abortController = startSession();
 
           // Sync ref IMMEDIATELY to prevent stale comparison on next effect run
           sessionSentenceIdRef.current = sentence.id;
 
           // Update playback position for cache eviction protection and ASR
-          service.setCurrentPlayingIndex(currentSentenceIndex, chapter.sentences);
+          service.setCurrentPlayingIndex(currentSentenceIndex, currentChapter.sentences);
 
-          // Check if we should use streaming (only for uncached sentences)
-          const useStreaming = enableStreamingTTS && !service.isAudioReady(sentence.id);
-
-          if (useStreaming) {
-            // Use streaming TTS for faster time-to-first-audio
-            service.playSentenceStreaming(sentence, true, abortController.signal).catch(error => {
-              if (error.name !== 'AbortError') {
-                console.error('Failed to play sentence (streaming):', error);
-                setIsPlaying(false);
-              }
-            });
-          } else {
-            // Use gapless playback for sample-accurate transitions
-            service.playSentenceGapless(sentence, chapter.sentences, currentSentenceIndex, abortController.signal).catch(error => {
-              if (error.name !== 'AbortError') {
-                console.error('Failed to play sentence:', error);
-                setIsPlaying(false);
-              }
-            });
-          }
+          // Always use playSentenceStreaming for sentence-by-sentence playback
+          // It handles both cached (instant via HTMLAudioElement) and uncached (streaming worklet)
+          // WITHOUT setting gapless mode, which allows sentenceEnd handler to advance properly
+          service.playSentenceStreaming(sentence, abortController.signal, audioPlaybackRate).catch(error => {
+            if (error.name !== 'AbortError') {
+              console.error('Failed to play sentence:', error);
+              setIsPlaying(false);
+            }
+          });
         }
       }
 
       // Preload entire chapter from current position
-      service.preloadFullChapter(chapter.sentences, currentSentenceIndex + 1);
+      service.preloadFullChapter(currentChapter.sentences, currentSentenceIndex + 1);
     } else {
-      // Pause if currently playing
-      if (service.isPlaying()) {
-        service.pause();
-        setPaused(true);
-      }
+      // Unconditionally pause — removes the race where isPlaying() is momentarily
+      // false during a sentence transition, causing the pause intent to be dropped.
+      // AudioPlayer.pause() is already idempotent (guards with !this.isPlaying internally).
+      service.pause();
+      setPaused(true);
     }
-  }, [isPlaying, currentSentenceIndex, currentChapterIndex, session.isPaused, startSession, getCurrentChapter, setIsPlaying, setPaused]);
+  }, [isPlaying, currentSentenceIndex, currentChapterIndex, currentChapter, session.isPaused, audioPlaybackRate, startSession, setIsPlaying, setPaused]);
 
   // Handle volume changes
   useEffect(() => {
@@ -464,9 +453,9 @@ export function useAudioPlayback() {
    * Background work happens async, cancelling any existing operations
    */
   const handlePlayPause = useCallback(() => {
-    // IMMEDIATE state update (optimistic UI)
+    const { isPlaying, setIsPlaying } = usePlaybackStore.getState();
     setIsPlaying(!isPlaying);
-  }, [isPlaying, setIsPlaying]);
+  }, []);
 
   /**
    * Cancel all operations and stop playback
@@ -494,7 +483,9 @@ export function useAudioPlayback() {
     if (!service || !service.isReady()) return;
 
     // Find sentence index and update store state
-    const chapter = getCurrentChapter();
+    // Use getState() to get fresh chapter data
+    const navState = useNavigationStore.getState();
+    const chapter = navState.currentBook?.chapters[navState.currentChapterIndex];
     if (chapter) {
       const index = chapter.sentences.findIndex(s => s.id === sentence.id);
       if (index >= 0) {
@@ -508,12 +499,14 @@ export function useAudioPlayback() {
     setIsPlaying(true);
 
     // Play effect will handle actual playback
-  }, [getCurrentChapter, setIsPlaying, setSentenceIndex, setPaused]);
+  }, [setIsPlaying, setSentenceIndex, setPaused]);
 
   // Skip to sentence - SINGLE entry point for sentence changes
   // Stops current audio, updates state, and starts new playback directly
   const skipToSentence = useCallback((index: number) => {
-    const chapter = getCurrentChapter();
+    // Use getState() to get fresh chapter data
+    const navState = useNavigationStore.getState();
+    const chapter = navState.currentBook?.chapters[navState.currentChapterIndex];
     if (!chapter || index < 0 || index >= chapter.sentences.length) return;
 
     const sentence = chapter.sentences[index];
@@ -525,7 +518,7 @@ export function useAudioPlayback() {
     }
 
     // Cancel existing session and create new one BEFORE state updates
-    const abortController = startSession(sentence.id, currentChapterIndex);
+    const abortController = startSession();
 
     // Sync ref IMMEDIATELY to prevent stale comparison in play effect
     sessionSentenceIdRef.current = sentence.id;
@@ -539,26 +532,14 @@ export function useAudioPlayback() {
       // Update playback position for cache eviction protection and ASR
       service.setCurrentPlayingIndex(index, chapter.sentences);
 
-      // Check if we should use streaming (only for uncached sentences)
-      const useStreaming = usePlaybackStore.getState().enableStreamingTTS && !service.isAudioReady(sentence.id);
-
-      if (useStreaming) {
-        // Use streaming TTS for faster time-to-first-audio
-        service.playSentenceStreaming(sentence, true, abortController.signal).catch(error => {
-          if (error.name !== 'AbortError') {
-            console.error('Failed to play sentence (streaming):', error);
-            setIsPlaying(false);
-          }
-        });
-      } else {
-        // Use gapless playback for sample-accurate transitions
-        service.playSentenceGapless(sentence, chapter.sentences, index, abortController.signal).catch(error => {
-          if (error.name !== 'AbortError') {
-            console.error('Failed to play sentence:', error);
-            setIsPlaying(false);
-          }
-        });
-      }
+      // Always use playSentenceStreaming - handles both cached and uncached
+      // without setting gapless mode, allowing proper sentenceEnd advancement
+      service.playSentenceStreaming(sentence, abortController.signal, audioPlaybackRate).catch(error => {
+        if (error.name !== 'AbortError') {
+          console.error('Failed to play sentence:', error);
+          setIsPlaying(false);
+        }
+      });
 
       // Ensure playing state
       if (!usePlaybackStore.getState().isPlaying) {
@@ -571,7 +552,7 @@ export function useAudioPlayback() {
       // No service ready, just ensure playing state for when it loads
       setIsPlaying(true);
     }
-  }, [getCurrentChapter, setIsPlaying, setSentenceIndex, startSession, currentChapterIndex]);
+  }, [setIsPlaying, setSentenceIndex, startSession, audioPlaybackRate]);
 
   return {
     initProgress,
