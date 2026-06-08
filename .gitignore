@@ -48,3 +48,8 @@ next-env.d.ts
 .codex
 .tldrignore
 thoughts/
+
+# Playwright
+/test-results/
+/playwright-report/
+/playwright/.cache/
