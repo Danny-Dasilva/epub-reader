@@ -2,6 +2,7 @@ import ePub, { Book, NavItem } from 'epubjs';
 import { ParsedBook, Chapter, TOCItem, Sentence } from './types';
 import { extractTextWithFormatting, extractChapterTitleFromHTML } from './formattingExtractor';
 import { tokenizeSentencesWithFormatting, splitLongSentencesWithFormatting } from './sentenceTokenizer';
+import { resolveChapterImages } from './imageExtractor';
 
 /**
  * Generate a unique book ID from metadata
@@ -157,13 +158,31 @@ export class EpubParser {
         // Split long sentences for better TTS (preserving formatting)
         sentences = splitLongSentencesWithFormatting(sentences, 200);
 
+        // Resolve inline images to data URLs and position them relative to
+        // sentences. Image char positions are shifted by the title prefix so
+        // they share the same coordinate space as sentence.startIndex.
+        // Images are display-only and excluded from `sentences`/TTS.
+        const chapterHref = item.href || '';
+        const rawImages = extracted.images.map(img => ({
+          ...img,
+          charIndex: img.charIndex + titleOffset
+        }));
+        const images = await resolveChapterImages(
+          this.book,
+          chapterHref,
+          chapterId,
+          rawImages,
+          sentences
+        );
+
         chapters.push({
           id: chapterId,
-          href: item.href || '',
+          href: chapterHref,
           title: chapterTitle,
           content: html,
           plainText,
-          sentences
+          sentences,
+          images: images.length > 0 ? images : undefined
         });
       } catch (e) {
         console.warn(`Failed to load chapter ${i}:`, e);

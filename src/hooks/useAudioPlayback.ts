@@ -254,11 +254,13 @@ export function useAudioPlayback() {
               });
             }
 
-            // Only clear pause state if still playing
-            // This prevents clearing pause when user has explicitly paused
-            if (usePlaybackStore.getState().isPlaying) {
-              setPaused(false);
-            }
+            // PAUSE FORCE-RESUME GUARD: do NOT clear pause state here. This
+            // microtask fires on every sentenceEnd; clearing isPaused based on a
+            // momentary isPlaying===true read races with a user pause that lands at
+            // the sentence boundary, dropping the pause intent. Pause clearing is
+            // owned exclusively by the explicit resume branch in the play-effect and
+            // by playSentence/skipToSentence. Normal auto-advance never paused, so
+            // there is nothing to clear here.
 
             // Handle sentence advancement for non-gapless modes (streaming and legacy)
             // Moving this here prevents race condition with the play effect
@@ -319,11 +321,23 @@ export function useAudioPlayback() {
 
     if (isPlaying) {
       // Check for resume FIRST - isPaused takes priority over session check
-      // because pause doesn't clear the session ID
-      if (isPaused) {
+      // because pause doesn't clear the session ID.
+      //
+      // PAUSE FORCE-RESUME GUARD: only resume if the current sentence is the one
+      // that was actually paused. sessionSentenceIdRef tracks the originally-playing
+      // sentence and is NOT updated when a near-end hand-off advances the index via
+      // sentenceStart -> setSentenceIndex. Without this identity gate, a hand-off-
+      // driven index change (sentence N -> N+1) re-runs this effect with isPaused
+      // still true and force-resumes audio for a DIFFERENT sentence.
+      if (isPaused && sessionSentenceIdRef.current === sentence.id) {
         // Resume from pause (same sentence, just paused)
         service.resume();
         setPaused(false);
+      } else if (isPaused) {
+        // Paused but the index has advanced (e.g. a near-end hand-off fired before
+        // pause settled). Do NOT resume — stay paused for the new sentence. The
+        // user must explicitly resume.
+        return;
       } else if (sessionSentenceIdRef.current === sentence.id) {
         // Fix 10: Use ref instead of state for comparison
         // Already playing/preparing this sentence (skipToSentence already started it)

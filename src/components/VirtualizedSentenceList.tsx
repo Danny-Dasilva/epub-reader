@@ -1,8 +1,16 @@
 'use client';
 
-import { memo, useCallback, useMemo, ReactNode } from 'react';
-import { Virtuoso } from 'react-virtuoso';
-import { Sentence, BlockType } from '@/lib/epub/types';
+import {
+  memo,
+  useCallback,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  forwardRef,
+  ReactNode,
+} from 'react';
+import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
+import { Sentence, BlockType, ChapterImage } from '@/lib/epub/types';
 import { TimestampSource, useSentenceStateStore } from '@/store/sentenceStateStore';
 import { SentenceSpan } from './SentenceSpan';
 
@@ -17,10 +25,22 @@ const virtuosoComponents = {
 
 interface VirtualizedSentenceListProps {
   sentences: Sentence[];
+  images?: ChapterImage[];
   highlightedSentenceId: string | null;
   highlightedWordIndex: number | null;
   highlightTimestampSource: TimestampSource | null;
   onSentenceClick: (index: number) => void;
+}
+
+/**
+ * Imperative handle exposed to parents so they can jump to an arbitrary
+ * sentence even when it is virtualized out of the DOM. `scrollToSentence`
+ * routes through Virtuoso's `scrollToIndex`, which mounts the target row before
+ * scrolling — unlike `document.getElementById`, which only works for currently
+ * mounted rows. See BUG 4 (search-result jump to far-down sentence).
+ */
+export interface VirtualizedSentenceListHandle {
+  scrollToSentence: (sentenceIndex: number) => void;
 }
 
 interface SentenceBlock {
@@ -28,6 +48,103 @@ interface SentenceBlock {
   level: number | undefined;
   sentences: Array<{ sentence: Sentence; globalIndex: number }>;
 }
+
+/**
+ * A renderable Virtuoso item: either a block of sentences or a standalone
+ * inline image. Image items are display-only — they are NOT sentences, carry
+ * no `sentence-${index}` id, and never affect sentence indexing/TTS.
+ */
+type RenderItem =
+  | { kind: 'block'; block: SentenceBlock }
+  | { kind: 'image'; image: ChapterImage };
+
+/**
+ * Interleave inline images with sentence blocks.
+ *
+ * Each image declares the sentence index it should appear BEFORE. We walk the
+ * grouped blocks in order and emit any pending images whose target sentence
+ * index is <= the first sentence index of the upcoming block. Remaining images
+ * (target index past the last sentence) are appended at the end.
+ */
+function buildRenderItems(blocks: SentenceBlock[], images: ChapterImage[]): RenderItem[] {
+  if (images.length === 0) {
+    return blocks.map(block => ({ kind: 'block', block }));
+  }
+
+  // Stable ascending order by target sentence index.
+  const sortedImages = [...images].sort((a, b) => a.sentenceIndex - b.sentenceIndex);
+  const items: RenderItem[] = [];
+  let imgIdx = 0;
+
+  for (const block of blocks) {
+    const blockStart = block.sentences.length > 0 ? block.sentences[0].globalIndex : Infinity;
+    // Emit images anchored before this block's first sentence.
+    while (imgIdx < sortedImages.length && sortedImages[imgIdx].sentenceIndex <= blockStart) {
+      items.push({ kind: 'image', image: sortedImages[imgIdx] });
+      imgIdx++;
+    }
+    items.push({ kind: 'block', block });
+  }
+
+  // Trailing images (after the last sentence).
+  while (imgIdx < sortedImages.length) {
+    items.push({ kind: 'image', image: sortedImages[imgIdx] });
+    imgIdx++;
+  }
+
+  return items;
+}
+
+/**
+ * Map a global sentence index to the Virtuoso render-item index that contains
+ * it. Render items interleave display-only image items with sentence blocks, so
+ * the render-item index does NOT equal the sentence index. We locate the block
+ * whose sentence range covers the target index.
+ *
+ * Returns -1 if no block contains the index (e.g. out-of-range).
+ */
+function sentenceIndexToItemIndex(renderItems: RenderItem[], sentenceIndex: number): number {
+  for (let i = 0; i < renderItems.length; i++) {
+    const item = renderItems[i];
+    if (item.kind !== 'block') continue;
+    const s = item.block.sentences;
+    if (s.length === 0) continue;
+    const first = s[0].globalIndex;
+    const last = s[s.length - 1].globalIndex;
+    if (sentenceIndex >= first && sentenceIndex <= last) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Standalone inline image rendered between sentence blocks.
+ * Uses native lazy loading and responsive sizing. Not a sentence: no
+ * `sentence-${index}` id, not clickable for playback, never sent to TTS.
+ */
+const ImageBlock = memo(function ImageBlock({ image }: { image: ChapterImage }) {
+  return (
+    <figure className="block-image" style={{ margin: '1.5em 0', textAlign: 'center' }}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={image.src}
+        alt={image.alt}
+        loading="lazy"
+        decoding="async"
+        style={{ maxWidth: '100%', height: 'auto', display: 'inline-block' }}
+      />
+      {image.alt ? (
+        <figcaption
+          className="block-image-caption"
+          style={{ fontSize: '0.85em', opacity: 0.7, marginTop: '0.5em' }}
+        >
+          {image.alt}
+        </figcaption>
+      ) : null}
+    </figure>
+  );
+});
 
 /**
  * Group consecutive sentences into blocks based on their block metadata
@@ -181,13 +298,17 @@ const SentenceWithState = memo(function SentenceWithState({
  * - computeItemKey for stable React keys
  * - Individual SentenceSpan components subscribe to their own state via SentenceWithState
  */
-export function VirtualizedSentenceList({
+export const VirtualizedSentenceList = forwardRef<
+  VirtualizedSentenceListHandle,
+  VirtualizedSentenceListProps
+>(function VirtualizedSentenceList({
   sentences,
+  images,
   highlightedSentenceId,
   highlightedWordIndex,
   highlightTimestampSource,
   onSentenceClick,
-}: VirtualizedSentenceListProps) {
+}, ref) {
   // Stable callback for sentence clicks
   const handleClick = useCallback((index: number) => {
     onSentenceClick(index);
@@ -196,22 +317,51 @@ export function VirtualizedSentenceList({
   // Group sentences into blocks for structured rendering
   const blocks = useMemo(() => groupSentencesByBlock(sentences), [sentences]);
 
-  // Stable computeItemKey - returns unique stable identifier for each block
-  // Uses first sentence ID to ensure stability across re-renders
+  // Interleave inline image items with sentence blocks. Images are display-only
+  // and do not participate in sentence indexing.
+  const renderItems = useMemo(
+    () => buildRenderItems(blocks, images ?? []),
+    [blocks, images]
+  );
+
+  // Imperative handle to Virtuoso so parents can jump to a sentence even when
+  // it is virtualized out of the DOM. See BUG 4.
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+
+  useImperativeHandle(ref, () => ({
+    scrollToSentence: (sentenceIndex: number) => {
+      const itemIndex = sentenceIndexToItemIndex(renderItems, sentenceIndex);
+      if (itemIndex < 0) return;
+      virtuosoRef.current?.scrollToIndex({
+        index: itemIndex,
+        align: 'center',
+        behavior: 'smooth',
+      });
+    },
+  }), [renderItems]);
+
+  // Stable computeItemKey - returns unique stable identifier for each item
   const computeItemKey = useCallback((index: number) => {
-    const block = blocks[index];
-    if (!block || block.sentences.length === 0) return `block-${index}`;
-    // Use first sentence ID as block key for stability
+    const item = renderItems[index];
+    if (!item) return `item-${index}`;
+    if (item.kind === 'image') return `image-${item.image.id}`;
+    const block = item.block;
+    if (block.sentences.length === 0) return `block-${index}`;
     return `block-${block.sentences[0].sentence.id}`;
-  }, [blocks]);
+  }, [renderItems]);
 
   // Memoized itemContent callback with stable dependencies
-  // Only re-creates when essential dependencies change
-  // This prevents unnecessary re-renders of off-screen items
   const itemContent = useCallback((index: number) => {
-    const block = blocks[index];
-    if (!block) return null;
+    const item = renderItems[index];
+    if (!item) return null;
 
+    if (item.kind === 'image') {
+      // Image blocks get their own measured height via Virtuoso; do not force a
+      // fixed intrinsic size so the natural image height is measured correctly.
+      return <ImageBlock image={item.image} />;
+    }
+
+    const block = item.block;
     return (
       // rendering-content-visibility: defer layout/paint for off-screen blocks.
       // contain-intrinsic-size hints the browser at ~120px per block so scrollbar
@@ -241,7 +391,7 @@ export function VirtualizedSentenceList({
       </div>
     );
   }, [
-    blocks,
+    renderItems,
     highlightedSentenceId,
     highlightedWordIndex,
     highlightTimestampSource,
@@ -250,12 +400,13 @@ export function VirtualizedSentenceList({
 
   return (
     <Virtuoso
+      ref={virtuosoRef}
       useWindowScroll
-      totalCount={blocks.length}
+      totalCount={renderItems.length}
       overscan={2}
       computeItemKey={computeItemKey}
       itemContent={itemContent}
       components={virtuosoComponents}
     />
   );
-}
+});

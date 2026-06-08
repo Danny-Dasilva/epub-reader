@@ -78,16 +78,30 @@ const LEADING_WHITESPACE_PATTERN = /^\s/;
 const TRAILING_WHITESPACE_PATTERN = /\s$/;
 const WORD_CHAR_START_PATTERN = /^[\w'''"]/;
 
+/**
+ * A raw inline-image reference captured during text extraction.
+ * `href` is the chapter-relative path from the XHTML (img@src or SVG image@xlink:href);
+ * `charIndex` is the position in the (pre-trim) plain text where the image occurs,
+ * used to interleave the image with the surrounding sentences at render time.
+ */
+export interface RawImageRef {
+  href: string;
+  alt: string;
+  charIndex: number;
+}
+
 export interface ExtractionResult {
   plainText: string;
   formattingSpans: FormattingSpan[];
   blockBoundaries: BlockBoundary[];
+  images: RawImageRef[];
 }
 
 interface ExtractorState {
   text: string;
   formattingSpans: FormattingSpan[];
   blockBoundaries: BlockBoundary[];
+  images: RawImageRef[];
   activeFormatting: Map<FormattingType, number>;  // type -> start position
   currentBlock: {
     type: BlockType;
@@ -103,6 +117,23 @@ interface ExtractorState {
 function getHeadingLevel(tagName: string): number {
   const match = tagName.match(HEADING_LEVEL_PATTERN);
   return match ? parseInt(match[1], 10) : 1;
+}
+
+/**
+ * Resolve the source href for an image element.
+ * Supports HTML <img src> and SVG <image xlink:href|href>.
+ * Skips inline data URIs already present in the markup is unnecessary — they
+ * are returned as-is and handled downstream.
+ */
+function getImageHref(el: Element): string | null {
+  const src =
+    el.getAttribute('src') ||
+    el.getAttribute('xlink:href') ||
+    // SVG <image> in XHTML parsed as HTML may expose href without the xlink prefix
+    el.getAttribute('href');
+  if (!src) return null;
+  const trimmed = src.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 /**
@@ -165,6 +196,23 @@ function processNode(node: Node, state: ExtractorState): void {
 
   const el = node as Element;
   const tagName = el.tagName.toLowerCase();
+
+  // Inline images: record their position so they can be rendered interleaved
+  // with sentences. They contribute NO text (so TTS/sentence tokenization is
+  // unaffected) but we remember where they appeared in the text stream.
+  // Handles both HTML <img> and SVG <image xlink:href="...">.
+  if (tagName === 'img' || tagName === 'image') {
+    const href = getImageHref(el);
+    if (href) {
+      state.images.push({
+        href,
+        alt: el.getAttribute('alt') || el.getAttribute('aria-label') || '',
+        charIndex: state.position
+      });
+    }
+    // <img> has no text children; SVG <image> has none either. Do not recurse.
+    return;
+  }
 
   // Check if this is a formatting tag
   const formattingType = FORMATTING_TAGS[tagName];
@@ -320,6 +368,7 @@ export function extractTextWithFormatting(html: string): ExtractionResult {
     text: '',
     formattingSpans: [],
     blockBoundaries: [],
+    images: [],
     activeFormatting: new Map(),
     currentBlock: null,
     position: 0
@@ -364,10 +413,18 @@ export function extractTextWithFormatting(html: string): ExtractionResult {
     }))
     .filter(block => block.endIndex > block.startIndex);
 
+  // Adjust image char positions for the leading-whitespace trim, clamped to
+  // the final plainText length so images at the very end map past the last char.
+  const adjustedImages = state.images.map(img => ({
+    ...img,
+    charIndex: Math.min(plainText.length, Math.max(0, img.charIndex - leadingTrim))
+  }));
+
   return {
     plainText,
     formattingSpans: adjustedSpans,
-    blockBoundaries: adjustedBlocks
+    blockBoundaries: adjustedBlocks,
+    images: adjustedImages
   };
 }
 

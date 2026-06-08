@@ -16,6 +16,7 @@ export interface WorkerInitMessage {
   onnxDir: string;
   voiceStylePath: string;
   enableLazyVoiceLoading?: boolean;  // Enable lazy voice loading feature
+  numThreads?: number;  // ONNX WASM thread count (reduced when pooling workers)
 }
 
 export interface WorkerSynthesizeMessage {
@@ -880,14 +881,17 @@ async function synthesize(
 /**
  * Initialize TTS models
  */
-async function initialize(baseUrl: string, onnxDir: string, voiceStylePath: string, useLazyLoading: boolean = false): Promise<'webgpu' | 'wasm'> {
+async function initialize(baseUrl: string, onnxDir: string, voiceStylePath: string, useLazyLoading: boolean = false, numThreads: number = 4): Promise<'webgpu' | 'wasm'> {
   // Store baseUrl for later use (e.g., voice changes)
   workerBaseUrl = baseUrl;
   enableLazyVoiceLoading = useLazyLoading;
 
   // Configure ONNX wasm paths with absolute URL
   ort.env.wasm.wasmPaths = `${baseUrl}/onnx/`;
-  ort.env.wasm.numThreads = 4;
+  // When the manager spins up >1 worker, each worker runs fewer WASM threads to
+  // avoid CPU oversubscription (2 workers * 4 threads would thrash). The manager
+  // passes a reduced count (e.g. 2) when pooled; defaults to 4 for a single worker.
+  ort.env.wasm.numThreads = numThreads;
 
   self.postMessage({ type: 'loading', modelName: 'Configuration', current: 0, total: 5 } as WorkerLoadingResponse);
 
@@ -953,7 +957,7 @@ self.onmessage = async (event: MessageEvent<WorkerInMessage>) => {
     case 'init': {
       try {
         const useLazyLoading = message.enableLazyVoiceLoading ?? false;
-        const backend = await initialize(message.baseUrl, message.onnxDir, message.voiceStylePath, useLazyLoading);
+        const backend = await initialize(message.baseUrl, message.onnxDir, message.voiceStylePath, useLazyLoading, message.numThreads ?? 4);
         self.postMessage({ type: 'ready', backend } as WorkerReadyResponse);
       } catch (error) {
         self.postMessage({

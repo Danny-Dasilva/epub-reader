@@ -317,6 +317,13 @@ export class AudioPlayer {
   private startNextPlayer(): void {
     if (!this.nextSentenceQueued) return;
 
+    // PAUSE FORCE-RESUME GUARD: a near-end RAF watcher calls this to hand off to
+    // the next sentence. If the user has paused (or playback is no longer active),
+    // do NOT swap players, do NOT call play(), and do NOT emit sentenceStart —
+    // emitting sentenceStart advances currentSentenceIndex, which re-runs the
+    // play-effect and force-resumes audio the user just paused.
+    if (usePlaybackStore.getState().session.isPaused || !this.isPlaying) return;
+
     const nextSentence = this.nextSentenceQueued;
     this.nextSentenceQueued = null;
 

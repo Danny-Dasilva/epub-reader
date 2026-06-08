@@ -107,6 +107,17 @@ export class PreloadQueueManager {
     const deviceMemory = typeof navigator !== 'undefined' ? (navigator as Navigator & { deviceMemory?: number }).deviceMemory : undefined;
     const adaptiveCacheSize = deviceMemory && deviceMemory < 4 ? 50 : 100;
 
+    // Align concurrency with the REAL number of TTS workers. Previously this was a
+    // phantom 6 even though a single worker serialized everything, so look-ahead
+    // never actually ran ahead of playback. With a worker pool of N, we allow N
+    // concurrent synthesis jobs (+1 small slack so a job can be staged while the
+    // worker drains the current one), so worker 1 synthesizes N+1 while worker 0
+    // plays N.
+    const workerCount =
+      typeof (ttsManager as { getWorkerCount?: () => number }).getWorkerCount === 'function'
+        ? (ttsManager as { getWorkerCount: () => number }).getWorkerCount()
+        : 1;
+
     this.config = {
       preloadCount: 4,
       preloadCharLimit: 800,
@@ -114,7 +125,7 @@ export class PreloadQueueManager {
       totalSteps: 5,        // Supertonic 2 is clean at 5 steps (no clipping)
       urgentSteps: 3,       // fast path for the current sentence; v2 doesn't clip at 3 (peak ~0.29)
       maxCacheSize: adaptiveCacheSize,
-      maxConcurrentTTS: 6,      // Process 6 batches concurrently for faster look-ahead refill
+      maxConcurrentTTS: workerCount + 1,  // Match real worker pool (no phantom queue)
       batchCharLimit: 600,      // Smaller batches = less post-processing overhead
       singleSentenceLimit: 600, // More sentences skip batch splitting (processed individually)
       enableASR: false,         // Default disabled to save ~50MB Parakeet model download
@@ -226,7 +237,9 @@ export class PreloadQueueManager {
         abortController: new AbortController()
       });
       this.queuedIds.add(sentence.id);  // Performance optimization #4
-      this.stateCallback?.(sentence.id, 'preloading');
+      // 'queued' = waiting for a worker (static orange). Flips to 'preloading'
+      // (pulsing orange) when synthesis actually starts, then 'ready'.
+      this.stateCallback?.(sentence.id, 'queued');
     });
 
     // Link abort controllers to session (use once: true to prevent listener accumulation)
@@ -404,6 +417,10 @@ export class PreloadQueueManager {
         }
       }
 
+      // Synthesis is actually starting now → flip from 'queued' to 'preloading'
+      // (pulsing orange). This is the moment the worker begins inference.
+      this.stateCallback?.(sentence.id, 'preloading');
+
       // Use fewer steps for urgent requests (priority 0 = current sentence)
       const totalSteps = priority === 0 ? this.config.urgentSteps : this.config.totalSteps;
 
@@ -478,6 +495,12 @@ export class PreloadQueueManager {
   private async processBatchedRequest(batch: BatchedRequest): Promise<void> {
     try {
       if (batch.abortController.signal.aborted) return;
+
+      // Synthesis starting for the whole batch → flip each from 'queued' to
+      // 'preloading' (pulsing orange).
+      for (const s of batch.sentences) {
+        this.stateCallback?.(s.id, 'preloading');
+      }
 
       // Use fewer steps for urgent requests (priority 0 = current sentence)
       const totalSteps = batch.priority === 0 ? this.config.urgentSteps : this.config.totalSteps;
@@ -940,11 +963,20 @@ export class PreloadQueueManager {
    * Add a sentence to the preload queue with high priority
    */
   prioritize(sentence: Sentence): void {
-    // Don't add if already cached, in queue, or being processed
-    // Performance optimization #4: O(1) check using Set instead of O(n) array.some()
+    // Already cached → nothing to do (it's 'ready').
     if (this.cache.has(sentence.id)) return;
-    if (this.queuedIds.has(sentence.id)) return;
-    if (this.activeRequests.has(sentence.id)) return;
+
+    // Already queued or in-flight: don't re-enqueue, but DO re-emit the current
+    // visual state so the moving look-ahead window repaints orange as playback
+    // advances (previously this silently early-returned and the window stalled).
+    if (this.queuedIds.has(sentence.id)) {
+      this.stateCallback?.(sentence.id, 'queued');
+      return;
+    }
+    if (this.activeRequests.has(sentence.id)) {
+      this.stateCallback?.(sentence.id, 'preloading');
+      return;
+    }
 
     // Add with priority 0 (highest) - heap will place at front
     this.queue.push({
@@ -954,7 +986,7 @@ export class PreloadQueueManager {
     });
     this.queuedIds.add(sentence.id);  // Performance optimization #4
 
-    this.stateCallback?.(sentence.id, 'preloading');
+    this.stateCallback?.(sentence.id, 'queued');
     this.processQueue();
   }
 
@@ -1012,7 +1044,7 @@ export class PreloadQueueManager {
       });
       this.queuedIds.add(sentence.id);
 
-      this.stateCallback?.(sentence.id, 'preloading');
+      this.stateCallback?.(sentence.id, 'queued');
     }
 
     // Continue processing if not already
@@ -1066,7 +1098,9 @@ export class PreloadQueueManager {
         abortController: new AbortController()
       });
       this.queuedIds.add(sentence.id);  // Performance optimization #4
-      this.stateCallback?.(sentence.id, 'preloading');
+      // 'queued' = waiting for a worker (static orange); becomes 'preloading'
+      // (pulsing) at synthesis start, then 'ready'.
+      this.stateCallback?.(sentence.id, 'queued');
     });
 
     // Link abort controllers to session (use once: true to prevent listener accumulation)

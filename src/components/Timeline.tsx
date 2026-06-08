@@ -22,6 +22,7 @@ interface TimelineProps {
 // These are fixed colors that match the theme - CSS variables don't work well in gradients
 const SEGMENT_COLORS = {
   pending: 'rgba(102, 102, 102, 0.2)',      // --text-muted at 0.2
+  queued: 'rgba(249, 115, 22, 0.35)',       // orange-500 at 0.35 (waiting for worker)
   preloading: 'rgba(249, 115, 22, 0.25)',   // orange-500 at 0.25
   ready: 'rgba(249, 115, 22, 0.6)',         // orange-500 at 0.6
   asr: 'rgba(110, 231, 183, 0.7)',          // --highlight-word-asr at 0.7
@@ -51,6 +52,7 @@ function getSegmentColor(
   if (hasASR && (state === 'ready' || state === 'playing')) return SEGMENT_COLORS.asr;
   if (state === 'ready') return SEGMENT_COLORS.ready;
   if (state === 'preloading') return SEGMENT_COLORS.preloading;
+  if (state === 'queued') return SEGMENT_COLORS.queued;
   return SEGMENT_COLORS.pending;
 }
 

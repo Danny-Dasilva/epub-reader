@@ -20,7 +20,7 @@ import { useMediaSession } from '@/hooks/useMediaSession';
 import { useBookSearch } from '@/hooks/useBookSearch';
 import { useTimeEstimation } from '@/hooks/useTimeEstimation';
 import dynamic from 'next/dynamic';
-import { VirtualizedSentenceList } from '@/components/VirtualizedSentenceList';
+import { VirtualizedSentenceList, VirtualizedSentenceListHandle } from '@/components/VirtualizedSentenceList';
 import { Timeline } from '@/components/Timeline';
 import { PlaybackControls } from '@/components/PlaybackControls';
 import { PageIndicator } from '@/components/PageIndicator';
@@ -70,6 +70,10 @@ export default function ReaderPage() {
   const mainRef = useRef<HTMLElement>(null);
   // Fix #8: Track pending sentence navigation after chapter change
   const pendingNavigationRef = useRef<{ sentenceIndex: number } | null>(null);
+  // BUG 4: imperative handle to the virtualized list so search-result and
+  // cross-chapter jumps can scroll to sentences that are virtualized out of the
+  // DOM (getElementById can't reach them). Routes through Virtuoso.scrollToIndex.
+  const sentenceListRef = useRef<VirtualizedSentenceListHandle>(null);
 
   const [book, setBook] = useState<ParsedBook | null>(null);
   const [pagination, setPagination] = useState<PaginationData | null>(null);
@@ -181,7 +185,11 @@ export default function ReaderPage() {
   // Auto-pause when tab is hidden
   useVisibilityPause();
 
-  // Auto-scroll to current sentence during playback
+  // Auto-scroll to current sentence during playback. The hook drives the
+  // during-playback auto-follow internally (via getElementById, since the
+  // playing sentence is always near the mounted window). Search-result and
+  // cross-chapter jumps use sentenceListRef.scrollToSentence instead (BUG 4),
+  // which reaches sentences virtualized out of the DOM.
   useAutoScroll({
     currentSentenceIndex: isPlaying ? currentSentenceIndex : null,
     isPlaying,
@@ -486,6 +494,14 @@ export default function ReaderPage() {
       handleChapterChange(chapterIndex);
     } else {
       skipToSentence(sentenceIndex);
+      // BUG 4: useAutoScroll is gated on isPlaying and won't fire on a
+      // stopped->playing transition, so scroll explicitly. Route through
+      // Virtuoso's imperative scrollToIndex so the target is reached even when
+      // it is virtualized out of the DOM (getElementById would return null).
+      // rAF lets React commit the new index/highlight first.
+      requestAnimationFrame(() =>
+        sentenceListRef.current?.scrollToSentence(sentenceIndex)
+      );
     }
     setShowSearch(false);
     clearSearch();
@@ -499,6 +515,12 @@ export default function ReaderPage() {
       // Verify sentence index is valid for new chapter
       if (sentenceIndex >= 0 && sentenceIndex < currentChapter.sentences.length) {
         skipToSentence(sentenceIndex);
+        // BUG 4: scroll to the target after the new chapter mounts. Route
+        // through Virtuoso's imperative scrollToIndex so far-down sentences that
+        // are virtualized out are reached. rAF lets the new chapter commit.
+        requestAnimationFrame(() =>
+          sentenceListRef.current?.scrollToSentence(sentenceIndex)
+        );
       }
     }
   }, [currentChapter, skipToSentence]);
@@ -626,7 +648,9 @@ export default function ReaderPage() {
 
               {/* Sentences */}
               <VirtualizedSentenceList
+                ref={sentenceListRef}
                 sentences={currentChapter.sentences}
+                images={currentChapter.images}
                 highlightedSentenceId={highlight.sentenceId}
                 highlightedWordIndex={highlight.wordIndex}
                 highlightTimestampSource={highlight.timestampSource}

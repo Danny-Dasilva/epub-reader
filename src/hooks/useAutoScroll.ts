@@ -9,6 +9,12 @@ interface UseAutoScrollOptions {
   containerRef?: React.RefObject<HTMLElement | null>;
 }
 
+// Window (ms) after a programmatic scrollIntoView during which scroll events
+// are ignored. Must be longer than the browser's smooth-scroll animation
+// (~300-600ms) so late animation scroll events aren't mistaken for a manual
+// user scroll. See BUG 2.
+const AUTO_SCROLL_GUARD_MS = 800;
+
 /**
  * Hook for auto-scrolling to the current sentence during playback.
  *
@@ -28,7 +34,10 @@ export function useAutoScroll({
   // Track if user has manually scrolled (temporarily disables auto-scroll)
   const userScrolledRef = useRef(false);
   const lastSentenceIndexRef = useRef<number | null>(null);
-  const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Timestamp of the last programmatic scroll. Scroll events within
+  // AUTO_SCROLL_GUARD_MS of this are ignored (they belong to the smooth-scroll
+  // animation, not the user). See BUG 2.
+  const lastAutoScrollTimeRef = useRef<number>(0);
 
   // Use refs for transient values read in the scroll handler
   // to avoid re-registering the scroll listener on every state change
@@ -41,6 +50,8 @@ export function useAutoScroll({
   const scrollToSentence = useCallback((index: number, position: ScrollPosition) => {
     const element = document.getElementById(`sentence-${index}`);
     if (element) {
+      // Record the time so the scroll handler ignores the animation's events.
+      lastAutoScrollTimeRef.current = Date.now();
       element.scrollIntoView({
         behavior: 'smooth',
         block: position === 'top' ? 'start' : 'center',
@@ -54,8 +65,10 @@ export function useAutoScroll({
     const container = containerRef?.current || window;
 
     const handleScroll = () => {
-      // If we're in the middle of an auto-scroll, ignore this event
-      if (scrollTimeoutRef.current) {
+      // Ignore scroll events that belong to a programmatic smooth-scroll
+      // animation. The animation can emit events well after the call, so we
+      // use a timestamp window rather than a short timeout. See BUG 2.
+      if (Date.now() - lastAutoScrollTimeRef.current < AUTO_SCROLL_GUARD_MS) {
         return;
       }
 
@@ -88,23 +101,30 @@ export function useAutoScroll({
       currentSentenceIndex !== null &&
       currentSentenceIndex !== lastSentenceIndexRef.current &&
       autoScroll &&
-      isPlaying &&
-      !userScrolledRef.current
+      isPlaying
     ) {
-      // Set a flag to ignore the scroll event we're about to trigger
-      scrollTimeoutRef.current = setTimeout(() => {
-        scrollTimeoutRef.current = null;
-      }, 500);
-
-      scrollToSentence(currentSentenceIndex, scrollPosition);
+      // If the user manually scrolled during the previous sentence, skip the
+      // auto-scroll for THIS advance only, then re-engage. This gives a brief
+      // pause when the user takes over, while guaranteeing a single stray
+      // scroll event can never permanently disable following during continuous
+      // playback (the old behavior only re-enabled on a play/pause transition).
+      // See BUG 2.
+      const skipThisAdvance = userScrolledRef.current;
+      userScrolledRef.current = false;
       lastSentenceIndexRef.current = currentSentenceIndex;
+
+      if (!skipThisAdvance) {
+        scrollToSentence(currentSentenceIndex, scrollPosition);
+      }
     }
   }, [currentSentenceIndex, autoScroll, scrollPosition, isPlaying, scrollToSentence]);
 
-  // Expose manual scroll function for external use
-  const scrollTo = useCallback((index: number) => {
-    scrollToSentence(index, scrollPosition);
-  }, [scrollToSentence, scrollPosition]);
+  // Expose manual scroll function for external use (e.g. search-result jumps).
+  // Defaults to centering the target sentence so an explicitly-chosen sentence
+  // lands in the middle of the viewport. See BUG 4.
+  const scrollTo = useCallback((index: number, position: ScrollPosition = 'center') => {
+    scrollToSentence(index, position);
+  }, [scrollToSentence]);
 
   return {
     scrollTo,

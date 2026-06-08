@@ -61,7 +61,33 @@ export class TTSWorkerManager {
   private workerBusy: boolean[] = [];
   private pendingDurationRequests: Map<string, PendingDurationRequest> = new Map();
   private workerReady: boolean[] = [];
-  private numWorkers = 1;
+  // Pool size is gated behind available device memory. Each worker loads its OWN
+  // ONNX session (~100-200MB), so only spin up a 2nd worker on machines with
+  // enough RAM. On low-memory devices we stay at 1 worker to avoid OOM.
+  // A 2nd worker lets preload synthesis run AHEAD of playback: while worker 0 is
+  // busy synthesizing the currently-playing sentence, worker 1 picks up the next
+  // queued sentence (concurrent inference is safe across separate sessions).
+  private numWorkers = TTSWorkerManager.computePoolSize();
+
+  /**
+   * Decide the worker-pool size based on available device memory.
+   * navigator.deviceMemory is RAM in GB (undefined on some browsers → assume 4).
+   * >= 8GB → 2 workers (real look-ahead); otherwise 1 worker (conservative).
+   */
+  private static computePoolSize(): number {
+    const deviceMemory =
+      typeof navigator !== 'undefined'
+        ? (navigator as Navigator & { deviceMemory?: number }).deviceMemory
+        : undefined;
+    return (deviceMemory ?? 4) >= 8 ? 2 : 1;
+  }
+
+  /**
+   * Number of TTS workers in the pool (model loads = sessions = this count).
+   */
+  getWorkerCount(): number {
+    return this.numWorkers;
+  }
   private pendingRequests: Map<string, PendingRequest> = new Map();
   private requestQueue: Array<{ message: WorkerInMessage; id: string }> = [];
   private isReady = false;
@@ -127,13 +153,17 @@ export class TTSWorkerManager {
 
       this.workers[i] = worker;
 
-      // Send init message with baseUrl for absolute URL construction in worker
+      // Send init message with baseUrl for absolute URL construction in worker.
+      // When pooling (numWorkers > 1) we halve per-worker WASM threads to avoid
+      // CPU oversubscription across the two concurrent ONNX sessions.
+      const numThreads = this.numWorkers > 1 ? 2 : 4;
       worker.postMessage({
         type: 'init',
         baseUrl,
         onnxDir,
         voiceStylePath,
-        enableLazyVoiceLoading
+        enableLazyVoiceLoading,
+        numThreads
       } as WorkerInMessage);
     }
 

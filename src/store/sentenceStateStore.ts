@@ -3,7 +3,10 @@ import { useEffect, useState, useRef } from 'react';
 import { useNavigationStore } from './navigationStore';
 
 // Sentence audio state for visual feedback
-export type SentenceAudioState = 'pending' | 'preloading' | 'ready' | 'playing' | 'played' | 'error';
+// - 'queued':     enqueued for synthesis, waiting for a free worker (static orange)
+// - 'preloading': actively being synthesized RIGHT NOW (pulsing orange)
+// - 'ready':      synthesized & cached, ready to play ahead (subtle orange tint)
+export type SentenceAudioState = 'pending' | 'queued' | 'preloading' | 'ready' | 'playing' | 'played' | 'error';
 
 // Timestamp source for highlighting accuracy indicator
 // - 'estimated': Simple character-weighted estimation
@@ -212,8 +215,10 @@ function extractSentenceIndex(sentenceId: string): number | null {
 }
 
 // LRU eviction configuration
-const MAX_SENTENCES_WINDOW = 100; // ±50 from current position
-const EVICTION_THRESHOLD = MAX_SENTENCES_WINDOW * 1.5; // 150 entries
+// Widened so far-ahead "queued"/"preloading" (orange) states survive in long
+// chapters where many sentences are prepared ahead of playback.
+const MAX_SENTENCES_WINDOW = 200; // ±100 from current position
+const EVICTION_THRESHOLD = MAX_SENTENCES_WINDOW * 1.5; // 300 entries
 
 interface SentenceStateStoreState {
   sentenceStates: SentenceStateMap;

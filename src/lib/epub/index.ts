@@ -2,4 +2,5 @@ export { EpubParser, parseEpub, findChapterById, findSentenceById, getTotalSente
 export { extractTextFromHTML, extractChapterText, cleanText, convertRomanNumerals } from './textExtractor';
 export { extractTextWithFormatting } from './formattingExtractor';
 export { tokenizeSentences, splitLongSentences, tokenizeSentencesWithFormatting, splitLongSentencesWithFormatting, getWordCount, estimateDuration } from './sentenceTokenizer';
-export type { ParsedBook, Chapter, Sentence, TOCItem, BookMetadata, ReadingProgress, FormattingSpan, FormattingType, BlockBoundary, BlockType } from './types';
+export { resolveChapterImages, imageSentenceIndex } from './imageExtractor';
+export type { ParsedBook, Chapter, ChapterImage, Sentence, TOCItem, BookMetadata, ReadingProgress, FormattingSpan, FormattingType, BlockBoundary, BlockType } from './types';
