@@ -485,10 +485,9 @@ export class AudioPlayer {
 
       if (this.isStreamingMode) {
         // For streaming: compute elapsed time from samples consumed
-        // samplesConsumed tracks OUTPUT samples (wall-clock time)
-        // Word timestamps are in audio content time, so multiply by playback rate
-        const sampleRate = this.audioContext?.sampleRate ?? 44100;
-        currentTime = (this.streamingSamplesConsumed / sampleRate) * this.playbackRate;
+        // The worklet reports consumed SOURCE samples, so this stays in the
+        // model's content timeline even when Web Audio resamples 24 kHz → 48 kHz.
+        currentTime = this.streamingSamplesConsumed / sentence.sampleRate;
       } else {
         // For non-streaming: use HTMLAudioElement currentTime
         player = this.getActivePlayer();
@@ -785,10 +784,10 @@ export class AudioPlayer {
     if (!this.streamingWorklet) {
       this.streamingWorklet = new StreamingAudioWorklet();
       // Pass playbackRate via processorOptions for synchronous init (no race)
-      await this.streamingWorklet.initialize(this.audioContext!, rateToUse);
+      await this.streamingWorklet.initialize(this.audioContext!, rateToUse, sentence.sampleRate);
     } else {
       // Reset with playback rate atomically to prevent chipmunk audio
-      this.streamingWorklet.resetWithPlaybackRate(rateToUse);
+      this.streamingWorklet.resetWithPlaybackRate(rateToUse, sentence.sampleRate);
     }
 
     // Emit sentenceStart BEFORE pause check to ensure it always fires
@@ -847,8 +846,7 @@ export class AudioPlayer {
         }
         this.stopWordTracking();
         // Calculate actual duration from samples consumed (accounts for playback rate)
-        const sampleRate = this.audioContext?.sampleRate ?? 44100;
-        const duration = (samplesConsumed ?? this.streamingSamplesConsumed) / sampleRate;
+        const duration = (samplesConsumed ?? this.streamingSamplesConsumed) / sentence.sampleRate;
         this.emit({
           type: 'sentenceEnd',
           sentenceId: sentence.sentenceId,

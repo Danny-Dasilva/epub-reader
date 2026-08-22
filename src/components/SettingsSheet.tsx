@@ -6,6 +6,7 @@ import { useUIStore, ScrollPosition } from '@/store/uiStore';
 import { usePlaybackStore } from '@/store/playbackStore';
 import { SleepTimerControl } from './SleepTimerControl';
 import { useSleepTimer } from '@/hooks/useSleepTimer';
+import { getInflectVoice, INFLECT_VOICES } from '@/lib/tts/inflectVoices';
 
 interface SettingsSheetProps {
   isOpen: boolean;
@@ -26,8 +27,6 @@ interface SettingsSheetProps {
   currentChapterIndex: number;
   onChapterSelect: (index: number) => void;
 }
-
-const VOICES = ['M1', 'M2', 'M3', 'M4', 'M5', 'F1', 'F2', 'F3', 'F4', 'F5'] as const;
 
 const VolumeIcon = ({ muted }: { muted?: boolean }) => (
   <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -180,13 +179,13 @@ export const SettingsSheet = memo(function SettingsSheet({
           <div className="settings-section">
             <h3 className="settings-section-title">Voice</h3>
             <div className="settings-row">
-              {VOICES.map((voice) => (
+              {INFLECT_VOICES.map((voice) => (
                 <button
-                  key={voice}
-                  className={`settings-pill ${currentVoice === voice ? 'active' : ''}`}
-                  onClick={() => onVoiceChange(voice)}
+                  key={voice.id}
+                  className={`settings-pill ${getInflectVoice(currentVoice).id === voice.id ? 'active' : ''}`}
+                  onClick={() => onVoiceChange(voice.id)}
                 >
-                  {voice}
+                  {voice.name} · {voice.downloadSize}
                 </button>
               ))}
             </div>

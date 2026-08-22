@@ -1,10 +1,8 @@
 #!/bin/bash
-# Download TTS models and ONNX runtime files
-# Run this script after npm install
+# Download the Sky v3 Inflect voice and ONNX Runtime browser assets.
 
-set -e
+set -euo pipefail
 
-# Handle force download flag
 FORCE_DOWNLOAD=false
 if [[ "${1:-}" == "--force" ]] || [[ "${1:-}" == "-f" ]]; then
     FORCE_DOWNLOAD=true
@@ -14,93 +12,52 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 PUBLIC_DIR="$PROJECT_ROOT/public"
+VOICE_DIR="$PUBLIC_DIR/models/inflect/sky-v3"
 
-echo "Setting up model directories..."
+echo "Setting up Inflect model directories..."
+mkdir -p "$VOICE_DIR/onnx" "$PUBLIC_DIR/onnx"
 
-# Create directories
-mkdir -p "$PUBLIC_DIR/models/tts"
-mkdir -p "$PUBLIC_DIR/onnx"
-mkdir -p "$PUBLIC_DIR/voice_styles"
-
-# ============================================
-# 1. Copy ONNX Runtime WASM files from node_modules
-# ============================================
 echo ""
 echo "Copying ONNX Runtime WASM files..."
-
 ONNX_SRC="$PROJECT_ROOT/node_modules/onnxruntime-web/dist"
-
-if [ -d "$ONNX_SRC" ]; then
-    cp "$ONNX_SRC/ort-wasm-simd-threaded.wasm" "$PUBLIC_DIR/onnx/"
-    cp "$ONNX_SRC/ort-wasm-simd-threaded.mjs" "$PUBLIC_DIR/onnx/"
-    cp "$ONNX_SRC/ort-wasm-simd-threaded.jsep.wasm" "$PUBLIC_DIR/onnx/"
-    cp "$ONNX_SRC/ort-wasm-simd-threaded.jsep.mjs" "$PUBLIC_DIR/onnx/"
-    echo "  ✓ ONNX Runtime WASM files copied"
-else
-    echo "  ✗ Error: onnxruntime-web not found. Run 'npm install' first."
+if [[ ! -d "$ONNX_SRC" ]]; then
+    echo "  ✗ onnxruntime-web not found. Run npm install first."
     exit 1
 fi
 
-# ============================================
-# 2. Download TTS models from Hugging Face (Supertonic)
-# ============================================
+for file in \
+    ort-wasm-simd-threaded.wasm \
+    ort-wasm-simd-threaded.mjs \
+    ort-wasm-simd-threaded.jsep.wasm \
+    ort-wasm-simd-threaded.jsep.mjs; do
+    cp "$ONNX_SRC/$file" "$PUBLIC_DIR/onnx/$file"
+done
+echo "  ✓ ONNX Runtime WASM files copied"
+
 echo ""
-echo "Downloading TTS models from Hugging Face..."
-
-# Supertonic 2 models: https://huggingface.co/Supertone/supertonic-2
-# (Chosen over v3 for speed: v2's denoiser is ~3.7x faster per step. v2 is multilingual
-#  en/ko/es/pt/fr and uses the same <lang> text tokens as v3.)
-HF_BASE="https://huggingface.co/Supertone/supertonic-2/resolve/main/onnx"
-
-# Model files to download
-TTS_FILES=(
-    "duration_predictor.onnx"
-    "text_encoder.onnx"
-    "vector_estimator.onnx"
-    "vocoder.onnx"
-    "tts.json"
-    "unicode_indexer.json"
+echo "Downloading Sky v3 from Danny-Dasilva/inflect-kokoro-voices..."
+HF_BASE="https://huggingface.co/Danny-Dasilva/inflect-kokoro-voices/resolve/main/sky-v3"
+MODEL_FILES=(
+    "LICENSE"
+    "THIRD_PARTY_NOTICES.md"
+    "config.json"
+    "symbols.json"
+    "frontend.json"
+    "onnx/duration.onnx"
+    "onnx/decode.onnx"
 )
 
-for file in "${TTS_FILES[@]}"; do
-    if [ -f "$PUBLIC_DIR/models/tts/$file" ] && [ "$FORCE_DOWNLOAD" = false ]; then
+for file in "${MODEL_FILES[@]}"; do
+    destination="$VOICE_DIR/$file"
+    if [[ -f "$destination" ]] && [[ "$FORCE_DOWNLOAD" == false ]]; then
         echo "  - $file (already exists, skipping)"
     else
         echo "  - Downloading $file..."
-        curl -L -o "$PUBLIC_DIR/models/tts/$file" "$HF_BASE/$file" --progress-bar
+        curl --fail --location --output "$destination" "$HF_BASE/$file" --progress-bar
     fi
 done
 
-echo "  ✓ TTS models downloaded"
-
-# ============================================
-# 3. Download voice styles from Hugging Face
-# ============================================
+echo "  ✓ Sky v3 downloaded"
 echo ""
-echo "Downloading voice styles..."
-
-HF_VOICES="https://huggingface.co/Supertone/supertonic-2/resolve/main/voice_styles"
-
-VOICE_FILES=("M1.json" "M2.json" "M3.json" "M4.json" "M5.json" "F1.json" "F2.json" "F3.json" "F4.json" "F5.json")
-
-for file in "${VOICE_FILES[@]}"; do
-    if [ -f "$PUBLIC_DIR/voice_styles/$file" ] && [ "$FORCE_DOWNLOAD" = false ]; then
-        echo "  - $file (already exists, skipping)"
-    else
-        echo "  - Downloading $file..."
-        curl -L -o "$PUBLIC_DIR/voice_styles/$file" "$HF_VOICES/$file" --progress-bar
-    fi
-done
-
-echo "  ✓ Voice styles downloaded"
-
-# ============================================
-# Summary
-# ============================================
-echo ""
-echo "============================================"
-echo "Setup complete!"
-echo ""
-echo "Downloaded files:"
-du -sh "$PUBLIC_DIR/models" "$PUBLIC_DIR/onnx" "$PUBLIC_DIR/voice_styles" 2>/dev/null || true
-echo "============================================"
+echo "Setup complete:"
+du -sh "$VOICE_DIR" "$PUBLIC_DIR/onnx" 2>/dev/null || true

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { DEFAULT_INFLECT_VOICE_ID, getInflectVoice } from '@/lib/tts/inflectVoices';
 
 interface TTSState {
   ttsReady: boolean;
@@ -22,7 +23,7 @@ export const useTTSStore = create<TTSState & TTSActions>()(
       ttsReady: false,
       ttsLoading: false,
       ttsBackend: null,
-      currentVoice: 'F5',
+      currentVoice: DEFAULT_INFLECT_VOICE_ID,
 
       // Actions
       setTTSReady: (ttsReady) => set({ ttsReady }),
@@ -34,7 +35,17 @@ export const useTTSStore = create<TTSState & TTSActions>()(
       name: 'epub-reader-tts',
       partialize: (state) => ({
         currentVoice: state.currentVoice
-      })
+      }),
+      // Existing installs persisted Supertonic IDs such as F5. Resolve those
+      // to the Inflect default instead of retaining a stale audio-cache key.
+      merge: (persisted, current) => {
+        const saved = persisted as Partial<TTSState> | undefined;
+        return {
+          ...current,
+          ...saved,
+          currentVoice: getInflectVoice(saved?.currentVoice ?? current.currentVoice).id,
+        };
+      },
     }
   )
 );

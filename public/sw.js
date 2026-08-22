@@ -1,11 +1,11 @@
 // Narrator Service Worker
 // NOTE: bump these version suffixes whenever the TTS model or synthesis output
-// changes (model swap v3->v2, denoising-step change, tokenization change). The
+// changes (model swap, frontend change, or synthesis behavior change). The
 // activate handler purges caches not in the allowed set, so a bump re-fetches the
-// on-disk models and drops stale synthesized audio. (v2: Supertonic 2 + <lang> tokens.)
-const CACHE_NAME = 'narrator-v2';
-const MODEL_CACHE_NAME = 'narrator-models-v2';
-const AUDIO_CACHE_NAME = 'narrator-audio-v2';
+// on-disk models and drops stale synthesized audio. (v3: Inflect Sky v3.)
+const CACHE_NAME = 'narrator-v3';
+const MODEL_CACHE_NAME = 'narrator-models-v3';
+const AUDIO_CACHE_NAME = 'narrator-audio-v3';
 
 // Static assets to cache immediately
 const STATIC_ASSETS = [
@@ -15,8 +15,7 @@ const STATIC_ASSETS = [
 
 // Model files to cache (will be added dynamically)
 const MODEL_PATTERNS = [
-  /\/models\/tts\/.+\.onnx$/,
-  /\/voice_styles\/.+\.bin$/,
+  /\/models\/inflect\/.+$/,
 ];
 
 // Install event - cache static assets

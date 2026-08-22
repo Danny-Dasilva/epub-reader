@@ -12,22 +12,9 @@ import {
   PlaybackEvent
 } from '@/lib/audio';
 import { Sentence } from '@/lib/epub';
+import { getInflectVoice } from '@/lib/tts/inflectVoices';
 
-const TTS_MODEL_PATH = '/models/tts';
-
-// Map voice names to file paths
-const VOICE_PATHS: Record<string, string> = {
-  'M1': '/voice_styles/M1.json',
-  'M2': '/voice_styles/M2.json',
-  'M3': '/voice_styles/M3.json',
-  'M4': '/voice_styles/M4.json',
-  'M5': '/voice_styles/M5.json',
-  'F1': '/voice_styles/F1.json',
-  'F2': '/voice_styles/F2.json',
-  'F3': '/voice_styles/F3.json',
-  'F4': '/voice_styles/F4.json',
-  'F5': '/voice_styles/F5.json',
-};
+const TTS_MODEL_PATH = '/models/inflect';
 
 export function useAudioPlayback() {
   const serviceRef = useRef<AudioSyncService | null>(null);
@@ -98,7 +85,7 @@ export function useAudioPlayback() {
       setInitMessage('Initializing...');
 
       try {
-        const voicePath = VOICE_PATHS[currentVoice] || VOICE_PATHS['M1'];
+        const voicePath = getInflectVoice(currentVoice).modelPath;
         // Capture the flag value on mount (won't change during initialization)
         const useLazyLoading = usePlaybackStore.getState().enableLazyVoiceLoading;
 
@@ -107,9 +94,8 @@ export function useAudioPlayback() {
           voiceStylePath: voicePath,
           preloadCount: 4,
           speed: speechRate,
-          // Supertonic 2: clean at low step counts (no clipping at 3-5). 5 = good
-          // speed/quality. (v3 needed 8 to avoid clipping but was ~3.7x slower/step.)
-          totalSteps: 5,
+          // Inflect runs one duration pass and one decode pass (no diffusion loop).
+          totalSteps: 2,
           enableLazyVoiceLoading: useLazyLoading
         });
 
@@ -431,7 +417,7 @@ export function useAudioPlayback() {
     // Cancel current operations when voice changes
     endSession();
 
-    const voicePath = VOICE_PATHS[currentVoice] || VOICE_PATHS['M1'];
+    const voicePath = getInflectVoice(currentVoice).modelPath;
     service.setVoiceStyle(voicePath).catch(error => {
       console.error('Failed to change voice:', error);
     });

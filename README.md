@@ -16,6 +16,13 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+## Text to speech
+
+The reader uses the 24 kHz Inflect `sky-v3` voice from
+`Danny-Dasilva/inflect-kokoro-voices`. `npm install` downloads its two ONNX
+graphs and metadata into `public/models/inflect/sky-v3`; rerun
+`npm run download-models` to restore the ignored model assets.
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.

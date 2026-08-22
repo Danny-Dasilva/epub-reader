@@ -734,9 +734,12 @@ export class PreloadQueueManager {
     const wavBuffer = await blob.arrayBuffer();
     const blobUrl = this.createAndTrackBlobUrl(sentence.id, wavBuffer);
 
-    // Estimate duration from WAV header (44 bytes header, 44100 Hz, 16-bit mono)
-    const dataSize = wavBuffer.byteLength - 44;
-    const duration = dataSize / (44100 * 2);
+    // Read the actual model rate from the PCM WAV header (Inflect is 24 kHz).
+    const wavView = new DataView(wavBuffer);
+    const sampleRate = wavView.getUint32(24, true);
+    const blockAlign = wavView.getUint16(32, true);
+    const dataSize = wavView.getUint32(40, true);
+    const duration = dataSize / (sampleRate * blockAlign);
 
     // We don't have raw PCM from cached blob, so create an empty Float32Array
     // This is okay because cached audio already has blobUrl and wavBuffer
@@ -749,7 +752,7 @@ export class PreloadQueueManager {
       wavBuffer,
       rawPcm,
       duration,
-      sampleRate: 44100,
+      sampleRate,
       wordTimestamps: this.estimateWordTimings(sentence.text, duration),
       timestampSource: 'estimated',
     };

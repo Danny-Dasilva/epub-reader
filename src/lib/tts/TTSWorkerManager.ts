@@ -32,13 +32,14 @@ export interface TTSSynthesisOptions {
 
 export interface TTSStreamingOptions extends TTSSynthesisOptions {
   chunkDurationMs?: number;  // Target chunk duration in milliseconds (default: 500ms)
-  onChunk?: (audio: Float32Array, chunkIndex: number, isLast: boolean) => void;
+  onChunk?: (audio: Float32Array, chunkIndex: number, isLast: boolean, sampleRate: number) => void;
 }
 
 export type TTSLoadProgressCallback = (modelName: string, current: number, total: number) => void;
 
 export interface TTSDurationResult {
   duration: number;
+  sampleRate: number;
   wordTimestamps: WordTimestamp[];
 }
 
@@ -46,7 +47,7 @@ interface PendingRequest {
   resolve: (result: TTSSynthesisResult) => void;
   reject: (error: Error) => void;
   onProgress?: (step: number, totalSteps: number) => void;
-  onChunk?: (audio: Float32Array, chunkIndex: number, isLast: boolean) => void;
+  onChunk?: (audio: Float32Array, chunkIndex: number, isLast: boolean, sampleRate: number) => void;
   workerIndex: number; // Track which worker is handling this request
   isStreaming?: boolean;  // Track if this is a streaming request
 }
@@ -96,6 +97,12 @@ export class TTSWorkerManager {
   private readyPromise: Promise<void> | null = null;
   private readyResolve: (() => void) | null = null;
   private readyReject: ((error: Error) => void) | null = null;
+  private voiceChange: {
+    path: string;
+    remainingWorkers: Set<number>;
+    resolve: () => void;
+    reject: (error: Error) => void;
+  } | null = null;
 
   private requestIdCounter = 0;
 
@@ -212,7 +219,7 @@ export class TTSWorkerManager {
         const pending = this.pendingRequests.get(chunkMsg.id);
         if (pending) {
           // Call chunk callback
-          pending.onChunk?.(chunkMsg.audio, chunkMsg.chunkIndex, chunkMsg.isLast);
+          pending.onChunk?.(chunkMsg.audio, chunkMsg.chunkIndex, chunkMsg.isLast, chunkMsg.sampleRate ?? 44100);
 
           // If this is the last chunk, resolve the promise and clean up
           if (chunkMsg.isLast) {
@@ -221,7 +228,7 @@ export class TTSWorkerManager {
               wav: new Float32Array(0),
               wavBuffer: new ArrayBuffer(0),
               duration: 0,
-              sampleRate: 44100,
+              sampleRate: chunkMsg.sampleRate ?? 44100,
               wordTimestamps: []  // Streaming doesn't include timestamps in chunk response
             });
             this.pendingRequests.delete(chunkMsg.id);
@@ -258,9 +265,21 @@ export class TTSWorkerManager {
         if (pending) {
           pending.resolve({
             duration: durationMsg.duration,
+            sampleRate: durationMsg.sampleRate ?? 44100,
             wordTimestamps: durationMsg.wordTimestamps
           });
           this.pendingDurationRequests.delete(durationMsg.id);
+        }
+        break;
+      }
+
+      case 'voiceChanged': {
+        const change = this.voiceChange;
+        if (!change || change.path !== message.voiceStylePath) break;
+        change.remainingWorkers.delete(workerIndex);
+        if (change.remainingWorkers.size === 0) {
+          this.voiceChange = null;
+          change.resolve();
         }
         break;
       }
@@ -295,8 +314,15 @@ export class TTSWorkerManager {
             this.pendingDurationRequests.delete(message.id);
           }
         } else {
-          // Global error (e.g., init failure)
-          this.readyReject?.(new Error(message.message));
+          const error = new Error(message.message);
+          if (this.voiceChange) {
+            const change = this.voiceChange;
+            this.voiceChange = null;
+            change.reject(error);
+          } else {
+            // Global error (e.g., init failure)
+            this.readyReject?.(error);
+          }
         }
         break;
       }
@@ -611,16 +637,30 @@ export class TTSWorkerManager {
     // js-cache-property-access: read window.location.origin once outside the loop
     const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
 
-    // Send voice change to all workers
-    for (const worker of this.workers) {
-      if (worker) {
-        worker.postMessage({
+    this.cancelAll();
+    if (this.voiceChange) {
+      this.voiceChange.reject(new DOMException('Voice change superseded', 'AbortError'));
+      this.voiceChange = null;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const remainingWorkers = new Set<number>();
+      for (let index = 0; index < this.workers.length; index++) {
+        if (this.workers[index]) remainingWorkers.add(index);
+      }
+      this.voiceChange = { path: voiceStylePath, remainingWorkers, resolve, reject };
+      for (const index of remainingWorkers) {
+        this.workers[index].postMessage({
           type: 'setVoice',
           baseUrl,
           voiceStylePath
         } as WorkerInMessage);
       }
-    }
+      if (remainingWorkers.size === 0) {
+        this.voiceChange = null;
+        resolve();
+      }
+    });
   }
 
   /**
@@ -665,6 +705,8 @@ export class TTSWorkerManager {
     this.isReady = false;
     this.backend = null;
     this.pendingRequests.clear();
+    this.voiceChange?.reject(new DOMException('Worker disposed', 'AbortError'));
+    this.voiceChange = null;
     this.requestQueue = [];
   }
 }

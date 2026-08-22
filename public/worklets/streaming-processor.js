@@ -8,8 +8,10 @@ class StreamingProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
 
-    // Ring buffer for audio samples (10 second capacity)
-    this.initialBufferSize = 44100 * 10;
+    // Source audio can differ from the AudioContext rate (Inflect is 24 kHz).
+    this.sourceSampleRate = options?.processorOptions?.sourceSampleRate ?? 44100;
+    // Ring buffer for source audio samples (10 second capacity)
+    this.initialBufferSize = this.sourceSampleRate * 10;
     this.buffer = new Float32Array(this.initialBufferSize);
     this.writePos = 0;
     this.readPos = 0;  // Now a float for fractional positioning (playback rate)
@@ -29,7 +31,7 @@ class StreamingProcessor extends AudioWorkletProcessor {
     this.progressThrottleMs = 33; // ~30Hz
 
     // Start playback after 500ms of audio is buffered
-    this.startThreshold = 44100 * 0.5;
+    this.startThreshold = this.sourceSampleRate * 0.5;
     this.isComplete = false;
     this.hasEnded = false;  // Guard to send 'ended' only once
 
@@ -49,12 +51,18 @@ class StreamingProcessor extends AudioWorkletProcessor {
         this.appendChunk(e.data.audio);
       } else if (e.data.type === 'complete') {
         this.isComplete = true;
+        // Short utterances should start as soon as the final chunk arrives,
+        // even when they never reach the normal 500 ms buffering threshold.
+        if (!this.isStarted && this.writePos > this.readPos) {
+          this.isStarted = true;
+          this.port.postMessage({ type: 'started' });
+        }
       } else if (e.data.type === 'reset') {
         // FIX #4: Store new generation from reset message
         if (e.data.generation !== undefined) {
           this.generation = e.data.generation;
         }
-        this.reset(e.data.playbackRate);
+        this.reset(e.data.playbackRate, e.data.sourceSampleRate);
       } else if (e.data.type === 'pause') {
         this.isPaused = true;
       } else if (e.data.type === 'resume') {
@@ -90,7 +98,8 @@ class StreamingProcessor extends AudioWorkletProcessor {
   appendChunk(chunk) {
     // Expand buffer if needed (double the size)
     if (this.writePos + chunk.length > this.buffer.length) {
-      const newBuffer = new Float32Array(this.buffer.length * 2);
+      const requiredSize = this.writePos + chunk.length;
+      const newBuffer = new Float32Array(Math.max(this.buffer.length * 2, requiredSize));
       newBuffer.set(this.buffer);
       this.buffer = newBuffer;
     }
@@ -106,7 +115,13 @@ class StreamingProcessor extends AudioWorkletProcessor {
     }
   }
 
-  reset(playbackRate = null) {
+  reset(playbackRate = null, sourceSampleRate = null) {
+    if (sourceSampleRate !== null && sourceSampleRate !== undefined && sourceSampleRate !== this.sourceSampleRate) {
+      this.sourceSampleRate = sourceSampleRate;
+      this.initialBufferSize = this.sourceSampleRate * 10;
+      this.startThreshold = this.sourceSampleRate * 0.5;
+      this.buffer = new Float32Array(this.initialBufferSize);
+    }
     // Compact buffer back to initial size if it grew (Fix #3: memory leak)
     if (this.buffer.length > this.initialBufferSize) {
       this.buffer = new Float32Array(this.initialBufferSize);
@@ -151,14 +166,15 @@ class StreamingProcessor extends AudioWorkletProcessor {
         const sample2 = this.buffer[intPos + 1];
         output[i] = sample1 + frac * (sample2 - sample1);
 
-        // Advance read position by playback rate
-        this.readPos += this.playbackRate;
-        this.samplesConsumed++;
+        // Resample source PCM to the AudioContext output rate while applying
+        // playback speed. `sampleRate` is the AudioWorklet global output rate.
+        this.readPos += this.playbackRate * (this.sourceSampleRate / sampleRate);
+        this.samplesConsumed = this.readPos;
       } else if (intPos < this.writePos) {
         // Last sample - no interpolation needed
         output[i] = this.buffer[intPos];
-        this.readPos += this.playbackRate;
-        this.samplesConsumed++;
+        this.readPos += this.playbackRate * (this.sourceSampleRate / sampleRate);
+        this.samplesConsumed = this.readPos;
       } else {
         // Buffer underrun - fill with silence
         output[i] = 0;
@@ -177,7 +193,7 @@ class StreamingProcessor extends AudioWorkletProcessor {
     } else if (!this.hasEnded) {
       // Performance optimization #1: Throttle progress to 30Hz
       // Calculate current time in ms from samples consumed
-      const currentTimeMs = (this.samplesConsumed / 44100) * 1000;
+      const currentTimeMs = currentTime * 1000;
       if (currentTimeMs - this.lastProgressTime >= this.progressThrottleMs) {
         this.lastProgressTime = currentTimeMs;
         const progress = this.writePos > 0 ? intReadPos / this.writePos : 0;

@@ -43,17 +43,23 @@ export class StreamingAudioWorklet {
   private isInitialized = false;
   private isPaused = false;
   private playbackRate = 1.0;
+  private sourceSampleRate = 44100;
   // FIX #4: Session generation counter to prevent stale chunk processing
   private generation = 0;
   private onStarted: (() => void) | null = null;
   private onEnded: ((samplesConsumed?: number) => void) | null = null;
   private onProgress: ((progress: number, samplesConsumed?: number) => void) | null = null;
 
-  async initialize(audioContext: AudioContext, initialPlaybackRate: number = 1.0): Promise<void> {
+  async initialize(
+    audioContext: AudioContext,
+    initialPlaybackRate: number = 1.0,
+    sourceSampleRate: number = 44100,
+  ): Promise<void> {
     if (this.isInitialized) return;
 
     this.audioContext = audioContext;
     this.playbackRate = initialPlaybackRate;
+    this.sourceSampleRate = sourceSampleRate;
 
     // Check if AudioWorklet is supported
     if (!audioContext.audioWorklet) {
@@ -75,7 +81,10 @@ export class StreamingAudioWorklet {
     // Create worklet node with initial playback rate via processorOptions
     // This eliminates race condition where process() runs before setPlaybackRate message
     this.workletNode = new AudioWorkletNode(audioContext, 'streaming-processor', {
-      processorOptions: { initialPlaybackRate: this.playbackRate }
+      processorOptions: {
+        initialPlaybackRate: this.playbackRate,
+        sourceSampleRate: this.sourceSampleRate,
+      }
     });
 
     // Create gain node for volume control
@@ -188,18 +197,20 @@ export class StreamingAudioWorklet {
    * Reset worklet with atomic playback rate setting
    * This prevents race conditions where chunks arrive before setPlaybackRate message
    */
-  resetWithPlaybackRate(rate: number): void {
+  resetWithPlaybackRate(rate: number, sourceSampleRate = this.sourceSampleRate): void {
     if (!this.workletNode) {
       throw new Error('Worklet not initialized');
     }
 
     this.playbackRate = Math.max(0.5, Math.min(2.0, rate));
+    this.sourceSampleRate = sourceSampleRate;
     // FIX #4: Increment generation so processor ignores stale chunks
     this.generation++;
     // Send playbackRate and generation inside reset message for atomic update
     this.workletNode.port.postMessage({
       type: 'reset',
       playbackRate: this.playbackRate,
+      sourceSampleRate: this.sourceSampleRate,
       generation: this.generation
     });
     this.isPaused = false;
@@ -211,7 +222,7 @@ export class StreamingAudioWorklet {
    * @param estimatedDurationMs Expected audio duration in milliseconds
    * @param sampleRate Audio sample rate (default 44100)
    */
-  preallocateBuffer(estimatedDurationMs: number, sampleRate = 44100): void {
+  preallocateBuffer(estimatedDurationMs: number, sampleRate = this.sourceSampleRate): void {
     if (!this.workletNode) return;
 
     const estimatedSamples = Math.ceil((estimatedDurationMs / 1000) * sampleRate);
@@ -264,6 +275,7 @@ export class StreamingAudioWorklet {
     this.isInitialized = false;
     this.isPaused = false;
     this.playbackRate = 1.0;
+    this.sourceSampleRate = 44100;
     this.onStarted = null;
     this.onEnded = null;
     this.onProgress = null;

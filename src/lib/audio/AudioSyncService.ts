@@ -234,7 +234,7 @@ export class AudioSyncService {
         sentenceId: sentence.id,
         text: sentence.text,
         rawPcm: new Float32Array(0),  // Not used for streaming
-        sampleRate: 44100,  // Not used for streaming
+        sampleRate: durationResult.sampleRate,
         wordTimestamps: durationResult.wordTimestamps,  // TTS-predicted timestamps (~25ms accuracy)
         duration: durationResult.duration,
         timestampSource: 'tts',
