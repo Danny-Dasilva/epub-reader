@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "Narrator",
+    "slug": "narrator-reader",
+    "version": "0.1.0",
+    "scheme": "narrator",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "bundleIdentifier": "dev.dannydasilva.narrator",
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "dev.dannydasilva.narrator",
+      "predictiveBackGestureEnabled": true
+    },
+    "web": {
+      "output": "static"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-audio",
+        {
+          "enableBackgroundPlayback": true,
+          "enableBackgroundRecording": false
+        }
+      ],
+      "expo-document-picker",
+      "expo-dev-client",
+      "onnxruntime-react-native",
+      "./plugins/with-onnxruntime-package"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    }
+  }
+}

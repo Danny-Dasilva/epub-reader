@@ -1,0 +1,36 @@
+name: Mobile
+
+on:
+  pull_request:
+    paths:
+      - 'apps/mobile/**'
+      - '.github/workflows/mobile.yml'
+  push:
+    paths:
+      - 'apps/mobile/**'
+      - '.github/workflows/mobile.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - run: npm ci
+      - run: npm test -- --watch=false
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npx expo export --platform android --output-dir dist
+        env:
+          CI: '1'
+          EXPO_NO_TELEMETRY: '1'

@@ -23,6 +23,13 @@ The reader uses the 24 kHz Inflect `sky-v3` voice from
 graphs and metadata into `public/models/inflect/sky-v3`; rerun
 `npm run download-models` to restore the ignored model assets.
 
+## Expo mobile app
+
+The native Expo port lives in [`apps/mobile`](apps/mobile). It shares Narrator's
+EPUB reading, Sky v3 narration, play/pause, navigation, and sentence/word
+highlighting behavior while using native file, storage, and audio adapters.
+See [`apps/mobile/README.md`](apps/mobile/README.md) for development-build setup.
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
