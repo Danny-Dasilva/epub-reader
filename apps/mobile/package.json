@@ -12,6 +12,7 @@
     "postinstall": "patch-package",
     "typecheck": "tsc --noEmit",
     "test": "jest --runInBand",
+    "test:e2e:android": "maestro test .maestro/reader-audio.yml",
     "test:watch": "jest --watch"
   },
   "dependencies": {

@@ -18,6 +18,7 @@ interface InflectConfig {
 }
 
 const NOISE_SCALE = 0.667;
+const SAMPLE_RATE = 24_000;
 const WORD = /\S+/gu;
 const SHORT_WORDS = new Set([
   'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'of', 'to', 'in', 'on',
@@ -113,6 +114,18 @@ function wordTimings(text: string, duration: number): WordTiming[] {
   });
 }
 
+function cachedOutput(text: string, speed: number): File {
+  const cacheDirectory = new Directory(Paths.cache, 'narrator-audio');
+  cacheDirectory.create({ idempotent: true, intermediates: true });
+  return new File(cacheDirectory, `${hashText(`${text}:${speed}:sky-v3`)}.wav`);
+}
+
+export function cachedWavDuration(fileSize: number, sampleRate = SAMPLE_RATE): number | null {
+  const pcmBytes = fileSize - 44;
+  if (pcmBytes <= 0 || pcmBytes % 2 !== 0) return null;
+  return pcmBytes / 2 / sampleRate;
+}
+
 export interface SpeechSynthesizer {
   synthesize(text: string, speed: number): Promise<SynthesizedAudio>;
   release(): void;
@@ -167,13 +180,20 @@ export class InflectSynthesizer implements SpeechSynthesizer {
   }
 
   private async synthesizeExclusive(text: string, speed: number): Promise<SynthesizedAudio> {
+    const output = cachedOutput(text, speed);
+    const cachedDuration = output.exists ? cachedWavDuration(output.size) : null;
+    if (cachedDuration) {
+      return {
+        uri: output.uri,
+        duration: cachedDuration,
+        wordTimings: wordTimings(text, cachedDuration),
+      };
+    }
+
     await this.initialize();
     const config = this.config;
     if (!config) throw new Error('Sky v3 configuration failed to load');
 
-    const cacheDirectory = new Directory(Paths.cache, 'narrator-audio');
-    cacheDirectory.create({ idempotent: true, intermediates: true });
-    const output = new File(cacheDirectory, `${hashText(`${text}:${speed}:sky-v3`)}.wav`);
     const chunks = splitInflectText(text);
     const parts: Float32Array[] = [];
     for (let index = 0; index < chunks.length; index++) {

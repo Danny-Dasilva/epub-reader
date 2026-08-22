@@ -4,6 +4,7 @@ import {
   phonemizeInflectText,
   splitInflectText,
 } from '@/lib/tts/inflectFrontend';
+import { cachedWavDuration } from '@/lib/tts/InflectSynthesizer';
 
 describe('Sky v3 mobile frontend', () => {
   it('normalizes Unicode, whitespace, and invisible controls', () => {
@@ -28,5 +29,11 @@ describe('Sky v3 mobile frontend', () => {
     expect(chunks.length).toBeGreaterThan(1);
     expect(chunks.every((chunk) => chunk.length <= 80)).toBe(true);
     expect(chunks.join(' ')).toContain('next sentence.');
+  });
+
+  it('derives cached PCM duration and rejects incomplete WAV files', () => {
+    expect(cachedWavDuration(44 + 96_256 * 2)).toBeCloseTo(4.0107, 3);
+    expect(cachedWavDuration(44)).toBeNull();
+    expect(cachedWavDuration(47)).toBeNull();
   });
 });

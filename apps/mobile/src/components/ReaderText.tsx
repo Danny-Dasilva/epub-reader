@@ -22,6 +22,9 @@ const SentenceLine = memo(function SentenceLine({
   onPress,
 }: SentenceLineProps) {
   let wordIndex = 0;
+  const currentWord = currentWordIndex === null
+    ? null
+    : sentence.text.split(/\s+/u)[currentWordIndex] ?? null;
   return (
     <Pressable
       accessibilityRole="button"
@@ -31,7 +34,12 @@ const SentenceLine = memo(function SentenceLine({
       style={[styles.sentence, isActive && styles.activeSentence]}
       testID={`sentence-${sentenceIndex}`}
     >
-      <Text style={styles.bodyText}>
+      <Text
+        accessibilityLabel={currentWord ? `Current word: ${currentWord}` : sentence.text}
+        accessibilityState={{ selected: isActive && currentWord !== null }}
+        style={styles.bodyText}
+        testID={currentWord ? `active-word-${sentenceIndex}-${currentWordIndex}` : undefined}
+      >
         {sentence.text.split(PARTS).filter(Boolean).map((part, partIndex) => {
           if (/^\s+$/u.test(part)) return part;
           const index = wordIndex++;

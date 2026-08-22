@@ -1,0 +1,74 @@
+appId: dev.dannydasilva.narrator
+name: EPUB narration, navigation, and highlighting
+---
+- launchApp:
+    clearState: true
+- assertVisible:
+    id: import-e2e-epub-button
+- tapOn:
+    id: import-e2e-epub-button
+- extendedWaitUntil:
+    visible: Narrator E2E Book
+    timeout: 30000
+- assertVisible:
+    id: sentence-0
+    selected: true
+- tapOn:
+    id: sentence-1
+- assertVisible:
+    id: sentence-1
+    selected: true
+- tapOn:
+    id: play-pause-button
+- extendedWaitUntil:
+    notVisible:
+      id: playback-loading
+    timeout: 240000
+- assertVisible:
+    id: play-pause-button
+    selected: true
+- extendedWaitUntil:
+    visible:
+      id: active-word-1-.*
+      selected: true
+    timeout: 30000
+- tapOn:
+    id: play-pause-button
+- assertVisible:
+    id: play-pause-button
+    selected: false
+- tapOn:
+    id: play-pause-button
+- assertVisible:
+    id: play-pause-button
+    selected: true
+- tapOn:
+    id: next-button
+- extendedWaitUntil:
+    visible:
+      id: sentence-2
+      selected: true
+    timeout: 120000
+- extendedWaitUntil:
+    visible:
+      id: active-word-2-.*
+      selected: true
+    timeout: 30000
+- tapOn:
+    id: previous-button
+- extendedWaitUntil:
+    visible:
+      id: sentence-1
+      selected: true
+    timeout: 120000
+- tapOn:
+    id: rate-button
+- assertVisible: 1.2×
+- tapOn:
+    id: chapter-picker-button
+- assertVisible: Table of contents
+- tapOn:
+    id: chapter-1
+- assertVisible:
+    id: sentence-0
+    selected: true

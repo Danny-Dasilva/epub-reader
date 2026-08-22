@@ -42,6 +42,7 @@ describe('ReaderText highlighting', () => {
     expect(screen.getByTestId('sentence-0-word-0')).not.toBeSelected();
     expect(screen.getByTestId('sentence-0-word-1')).toBeSelected();
     expect(screen.getByTestId('sentence-0-word-2')).not.toBeSelected();
+    expect(screen.getByTestId('active-word-0-1')).toBeSelected();
 
     view.rerender(
       <ReaderText
@@ -53,6 +54,7 @@ describe('ReaderText highlighting', () => {
     );
     expect(screen.getByTestId('sentence-0-word-1')).not.toBeSelected();
     expect(screen.getByTestId('sentence-0-word-2')).toBeSelected();
+    expect(screen.getByTestId('active-word-0-2')).toBeSelected();
   });
 
   it('seeks narration when a sentence is pressed', () => {

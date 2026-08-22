@@ -17,7 +17,10 @@ import {
 import { colors } from '@/constants/theme';
 import { parseEpubBytes } from '@/lib/epub/parseEpub';
 import { libraryRepository } from '@/lib/storage/libraryRepository';
+import { sampleEpubBytes } from '@/testing/e2eEpub';
 import type { LibraryBook } from '@/types/reader';
+
+const E2E_ENABLED = process.env.EXPO_PUBLIC_E2E === '1';
 
 export default function LibraryScreen() {
   const router = useRouter();
@@ -33,18 +36,11 @@ export default function LibraryScreen() {
     void reload();
   }, [reload]));
 
-  const importBook = useCallback(async () => {
+  const saveImportedBook = useCallback(async (data: ArrayBuffer | Uint8Array, name: string) => {
     setError(null);
-    const result = await DocumentPicker.getDocumentAsync({
-      type: ['application/epub+zip', 'application/zip'],
-      copyToCacheDirectory: true,
-      multiple: false,
-    });
-    if (result.canceled) return;
     setIsImporting(true);
     try {
-      const asset = result.assets[0];
-      const book = await parseEpubBytes(await new File(asset.uri).arrayBuffer(), asset.name);
+      const book = await parseEpubBytes(data, name);
       await libraryRepository.saveBook(book);
       await reload();
       router.push(`/reader/${book.id}` as Href);
@@ -54,6 +50,22 @@ export default function LibraryScreen() {
       setIsImporting(false);
     }
   }, [reload, router]);
+
+  const importBook = useCallback(async () => {
+    setError(null);
+    const result = await DocumentPicker.getDocumentAsync({
+      type: ['application/epub+zip', 'application/zip'],
+      copyToCacheDirectory: true,
+      multiple: false,
+    });
+    if (result.canceled) return;
+    const asset = result.assets[0];
+    await saveImportedBook(await new File(asset.uri).arrayBuffer(), asset.name);
+  }, [saveImportedBook]);
+
+  const importE2eBook = useCallback(async () => {
+    return saveImportedBook(await sampleEpubBytes(), 'sample.epub');
+  }, [saveImportedBook]);
 
   const confirmDelete = useCallback((book: LibraryBook) => {
     Alert.alert('Remove book?', `${book.title} will be removed from this device.`, [
@@ -86,6 +98,19 @@ export default function LibraryScreen() {
       </View>
 
       {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
+
+      {E2E_ENABLED ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Import bundled E2E EPUB"
+          disabled={isImporting}
+          onPress={() => void importE2eBook()}
+          style={styles.e2eButton}
+          testID="import-e2e-epub-button"
+        >
+          <Text style={styles.e2eButtonLabel}>Import test EPUB</Text>
+        </Pressable>
+      ) : null}
 
       <FlatList
         contentContainerStyle={books.length === 0 ? styles.emptyList : styles.bookList}
@@ -136,6 +161,8 @@ const styles = StyleSheet.create({
   importButton: { backgroundColor: colors.accent, borderRadius: 18, minWidth: 86, paddingHorizontal: 14, paddingVertical: 10 },
   importLabel: { color: colors.white, fontSize: 13, fontWeight: '800', textAlign: 'center' },
   error: { color: colors.danger, marginHorizontal: 22, marginBottom: 10 },
+  e2eButton: { alignSelf: 'center', borderColor: colors.accent, borderRadius: 14, borderWidth: 1, marginBottom: 12, paddingHorizontal: 14, paddingVertical: 8 },
+  e2eButtonLabel: { color: colors.accent, fontSize: 12, fontWeight: '800' },
   bookList: { gap: 12, paddingHorizontal: 18, paddingBottom: 30 },
   emptyList: { flexGrow: 1, justifyContent: 'center', padding: 32 },
   emptyState: { alignItems: 'center' },

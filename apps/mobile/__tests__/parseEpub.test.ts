@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 
 import { parseEpubBytes } from '@/lib/epub/parseEpub';
+import { sampleEpubBytes } from '@/testing/e2eEpub';
 
 async function createEpub(): Promise<Uint8Array> {
   const zip = new JSZip();
@@ -36,6 +37,16 @@ describe('parseEpubBytes', () => {
     zip.file('hello.txt', 'not an epub');
     await expect(parseEpubBytes(await zip.generateAsync({ type: 'uint8array' }))).rejects.toThrow(
       'META-INF/container.xml',
+    );
+  });
+
+  it('parses the exact EPUB fixture used by the device E2E flow', async () => {
+    const book = await parseEpubBytes(await sampleEpubBytes(), 'sample.epub');
+    expect(book.title).toBe('Narrator E2E Book');
+    expect(book.author).toBe('Expo Test Author');
+    expect(book.chapters).toHaveLength(2);
+    expect(book.chapters[0].sentences[1].text).toBe(
+      'This is the first narrated sentence in the Expo test book.',
     );
   });
 });
