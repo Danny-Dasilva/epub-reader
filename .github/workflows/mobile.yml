@@ -56,12 +56,12 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      - uses: gradle/actions/setup-gradle@v6
-        with:
-          cache-provider: basic
       - run: npm ci
       - name: Generate Android project
         run: npx expo prebuild --platform android --clean
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
       - name: Install required Android NDK
         run: >-
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'ndk;27.1.12297006'
