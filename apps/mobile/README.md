@@ -37,6 +37,14 @@ npm run test:e2e:android
 `EXPO_PUBLIC_E2E` only exposes the deterministic fixture-import button in E2E
 builds. Regular development and production builds do not include that control.
 
+## Continuous APK builds
+
+Every push that changes the mobile app or its GitHub Actions workflow runs the
+test, typecheck, lint, and Expo export gates before building a native release
+APK. Download `narrator-android-<commit SHA>` from the workflow run's Artifacts
+section. Artifacts are retained for 14 days; pull requests run verification
+without publishing an APK.
+
 The web application remains at the repository root. Mobile code is intentionally
 isolated here so both clients can evolve without platform-specific dependencies
 leaking across their bundles.
