@@ -59,17 +59,11 @@ export const useSleepTimerStore = create<SleepTimerState & SleepTimerActions>()(
           // Don't tick for chapter_end mode
           if (!state.isActive || state.selectedPreset === 'chapter_end') return state;
 
-          const newRemaining = Math.max(0, state.remainingMs - deltaMs);
-
-          if (newRemaining <= 0) {
-            // Timer expired - stop it
-            return {
-              isActive: false,
-              remainingMs: 0,
-              selectedPreset: null
-            };
-          }
-          return { remainingMs: newRemaining };
+          // Leave isActive set when this reaches 0. The expiry effect in
+          // useSleepTimer keys on `isActive && remainingMs <= 0` to pause
+          // playback, then calls stopTimer(). Clearing isActive here meant the
+          // expiry never fired and playback kept going.
+          return { remainingMs: Math.max(0, state.remainingMs - deltaMs) };
         });
       },
 
