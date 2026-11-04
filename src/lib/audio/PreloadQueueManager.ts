@@ -48,11 +48,26 @@ interface QueuedRequest {
 
 interface BatchedRequest {
   sentences: Sentence[];           // Original sentences in batch
+  requests: QueuedRequest[];       // Per-sentence request objects (same order as sentences),
+                                   // used for identity checks against activeRequests
   combinedText: string;            // Concatenated text
   charBoundaries: number[];        // Character positions where each sentence ends
   abortController: AbortController;
   priority: number;
 }
+
+/**
+ * Urgent (prepareSentence) synthesis shared by every concurrent caller for the same id.
+ * `waiters` counts callers still awaiting it; the synthesis itself is aborted only once
+ * every waiting caller has aborted its own signal.
+ */
+interface UrgentRequest {
+  promise: Promise<SentenceAudio>;
+  controller: AbortController;
+  waiters: number;
+}
+
+const abortError = (): DOMException => new DOMException('Aborted', 'AbortError');
 
 export class PreloadQueueManager {
   private ttsManager: TTSWorkerManager;
@@ -62,6 +77,14 @@ export class PreloadQueueManager {
   // Performance optimization #4: O(1) queue membership check
   private queuedIds = new Set<string>();
   private activeRequests: Map<string, QueuedRequest> = new Map();  // Track concurrent TTS operations
+  // Urgent in-flight work from prepareSentence(). Not counted against maxConcurrentTTS, but
+  // every enqueue path treats it as "in flight" so the same sentence isn't synthesized twice.
+  private urgentRequests: Map<string, UrgentRequest> = new Map();
+  // Last visual state THIS manager emitted per sentence. Only ids we still own (last painted
+  // 'queued'/'preloading'/'ready' by us) are reset to 'pending'. Ownership is released when
+  // playback reaches a sentence, so AudioSyncService's 'playing'/'played' is never stomped.
+  private emittedState: Map<string, SentenceAudioState> = new Map();
+  private disposed = false;
   private sessionController: AbortController | null = null;
   // Identity of the sentence list the current full-chapter preload session was started for.
   // Used to make preloadFullChapter idempotent: re-calling it for the SAME chapter must not
@@ -196,8 +219,8 @@ export class PreloadQueueManager {
    * Cancels all existing operations and starts fresh from the given index
    */
   startSession(sentences: Sentence[], startIndex: number): void {
-    // Cancel existing session
-    this.cancelSession();
+    // Cancel existing session (repaint of cancelled ids deferred until re-queue is done)
+    const cancelled = this.cancelSessionInternal();
 
     // Create new session controller
     this.sessionController = new AbortController();
@@ -218,8 +241,8 @@ export class PreloadQueueManager {
         break;
       }
 
-      // Skip if already cached
-      if (!this.cache.has(sentence.id)) {
+      // Skip if already cached or being synthesized on the urgent path
+      if (!this.cache.has(sentence.id) && !this.urgentRequests.has(sentence.id)) {
         toPreload.push(sentence);
       }
 
@@ -239,7 +262,7 @@ export class PreloadQueueManager {
       this.queuedIds.add(sentence.id);  // Performance optimization #4
       // 'queued' = waiting for a worker (static orange). Flips to 'preloading'
       // (pulsing orange) when synthesis actually starts, then 'ready'.
-      this.stateCallback?.(sentence.id, 'queued');
+      this.emitState(sentence.id, 'queued');
     });
 
     // Link abort controllers to session (use once: true to prevent listener accumulation)
@@ -252,6 +275,9 @@ export class PreloadQueueManager {
       }
     }, { once: true });
 
+    // Cancelled sentences that weren't re-queued go back to 'pending'
+    this.markCancelledPending(cancelled);
+
     // Start processing
     this.processQueue();
   }
@@ -260,6 +286,21 @@ export class PreloadQueueManager {
    * Cancel the current session
    */
   cancelSession(): void {
+    this.markCancelledPending(this.cancelSessionInternal());
+  }
+
+  /**
+   * Abort the session and every queued/active background request (urgent prepareSentence
+   * work is left alone). Returns the ids that were queued or in flight so the caller can
+   * repaint them once it knows which ones it re-queued (avoids 'pending' -> 'queued' flicker).
+   *
+   * Clearing activeRequests here is safe: the finally blocks of the aborted
+   * processSingleSentence/processBatchedRequest calls only delete their own request object
+   * (identity check), so they can't remove entries for requests started after this point,
+   * and they still call processQueue() to refill slots.
+   */
+  private cancelSessionInternal(): string[] {
+    const cancelled = [...this.queuedIds, ...this.activeRequests.keys()];
     this.sessionController?.abort();
     this.sessionController = null;
     this.preloadSessionSentences = null;
@@ -268,6 +309,60 @@ export class PreloadQueueManager {
     // Abort and clear all active requests
     this.activeRequests.forEach(req => req.abortController.abort());
     this.activeRequests.clear();
+    return cancelled;
+  }
+
+  // ============================================
+  // Visual state ownership
+  // ============================================
+
+  /**
+   * Emit a visual state and remember it as the last state this manager painted.
+   */
+  private emitState(sentenceId: string, state: SentenceAudioState): void {
+    if (this.disposed) return;
+    if (state === 'pending') {
+      this.emittedState.delete(sentenceId);
+    } else {
+      this.emittedState.set(sentenceId, state);
+    }
+    this.stateCallback?.(sentenceId, state);
+  }
+
+  private isInFlight(sentenceId: string): boolean {
+    return (
+      this.queuedIds.has(sentenceId) ||
+      this.activeRequests.has(sentenceId) ||
+      this.urgentRequests.has(sentenceId)
+    );
+  }
+
+  /**
+   * After a cancellation: if the sentence is neither cached nor queued/in flight any more and
+   * we last painted it 'queued'/'preloading', paint it 'pending'.
+   */
+  private markPendingIfCancelled(sentenceId: string): void {
+    if (this.cache.has(sentenceId) || this.isInFlight(sentenceId)) return;
+    const last = this.emittedState.get(sentenceId);
+    if (last === 'queued' || last === 'preloading') {
+      this.emitState(sentenceId, 'pending');
+    }
+  }
+
+  private markCancelledPending(sentenceIds: Iterable<string>): void {
+    for (const id of sentenceIds) {
+      this.markPendingIfCancelled(id);
+    }
+  }
+
+  /**
+   * After cached audio was dropped: if we last painted the sentence 'ready', paint it 'pending'.
+   */
+  private markPendingIfEvicted(sentenceId: string): void {
+    if (this.cache.has(sentenceId)) return;
+    if (this.emittedState.get(sentenceId) === 'ready') {
+      this.emitState(sentenceId, 'pending');
+    }
   }
 
   /**
@@ -289,7 +384,7 @@ export class PreloadQueueManager {
 
       if (batch.sentences.length === 1) {
         // Single sentence - process normally
-        this.processSingleSentence(batch.sentences[0], batch.abortController, batch.priority);
+        this.processSingleSentence(batch.requests[0], batch.abortController, batch.priority);
       } else {
         // Multiple sentences - process as batch
         console.log(`[Preload] Batched ${batch.sentences.length} sentences (${batch.combinedText.length} chars)`);
@@ -306,6 +401,7 @@ export class PreloadQueueManager {
     if (this.queue.size === 0) return null;
 
     const batch: Sentence[] = [];
+    const requests: QueuedRequest[] = [];
     const abortControllers: AbortController[] = [];
     let totalChars = 0;
     let priority = Infinity;
@@ -331,6 +427,7 @@ export class PreloadQueueManager {
           this.activeRequests.set(next.sentence.id, next);
           return {
             sentences: [next.sentence],
+            requests: [next],
             combinedText: next.sentence.text,
             charBoundaries: [textLen],
             abortController: next.abortController,
@@ -349,6 +446,7 @@ export class PreloadQueueManager {
       const request = this.queue.pop()!;
       this.queuedIds.delete(request.sentence.id);  // Performance optimization #4
       batch.push(request.sentence);
+      requests.push(request);
       abortControllers.push(request.abortController);
       totalChars += textLen;
       priority = Math.min(priority, request.priority);
@@ -376,13 +474,14 @@ export class PreloadQueueManager {
       ac.signal.addEventListener('abort', () => batchAbort.abort(), { once: true });
     });
 
-    return { sentences: batch, combinedText, charBoundaries, abortController: batchAbort, priority };
+    return { sentences: batch, requests, combinedText, charBoundaries, abortController: batchAbort, priority };
   }
 
   /**
    * Process a single sentence (non-batched)
    */
-  private async processSingleSentence(sentence: Sentence, abortController: AbortController, priority: number): Promise<void> {
+  private async processSingleSentence(request: QueuedRequest, abortController: AbortController, priority: number): Promise<void> {
+    const { sentence } = request;
     try {
       // Check if cancelled before starting
       if (abortController.signal.aborted) {
@@ -391,35 +490,26 @@ export class PreloadQueueManager {
 
       // Check cache first
       if (this.audioCacheEnabled && this.currentBookId) {
-        const cacheParams: AudioCacheParams = {
-          bookId: this.currentBookId,
-          chapterId: parseInt(sentence.chapterId) || 0,
-          sentenceId: sentence.id,
-          text: sentence.text,
-          voice: this.currentVoice,
-          speechRate: this.currentSpeechRate,
-        };
-
-        const cachedBlob = await this.audioCache.getCachedAudio(cacheParams);
+        const cachedBlob = await this.audioCache.getCachedAudio(this.cacheParamsFor(sentence));
         if (cachedBlob) {
           // Use cached audio
           const audio = await this.createSentenceAudioFromBlob(sentence, cachedBlob);
-
-          // Evict old entries if cache is full
-          this.evictIfNeeded();
-
-          this.cache.set(sentence.id, audio);
-          this.touchAccess(sentence.id);
-          this.stateCallback?.(sentence.id, 'ready');
-          this.config.onItemComplete?.(sentence.id, this.cache.size);
-          console.log(`[Preload] Cache HIT for sentence: ${sentence.id}`);
+          if (this.commitAudio(audio)) {
+            this.config.onItemComplete?.(sentence.id, this.cache.size);
+            console.log(`[Preload] Cache HIT for sentence: ${sentence.id}`);
+          }
           return;
         }
       }
 
+      // Cancelled during the cache lookup, or another path (urgent) cached it meanwhile
+      if (abortController.signal.aborted || this.cache.has(sentence.id)) {
+        return;
+      }
+
       // Synthesis is actually starting now → flip from 'queued' to 'preloading'
       // (pulsing orange). This is the moment the worker begins inference.
-      this.stateCallback?.(sentence.id, 'preloading');
+      this.emitState(sentence.id, 'preloading');
 
       // Use fewer steps for urgent requests (priority 0 = current sentence)
       const totalSteps = priority === 0 ? this.config.urgentSteps : this.config.totalSteps;
@@ -435,55 +525,39 @@ export class PreloadQueueManager {
         abortController.signal
       );
 
-      // Evict old entries if cache is full
-      this.evictIfNeeded();
-
       // Create SentenceAudio
       const audio = await this.createSentenceAudio(sentence, result);
 
-      // Create blob URL NOW during preload (not lazily at playback time)
-      // This prevents main thread stall during sentence transitions
-      if (!audio.blobUrl) {
-        // Optimization #3: Use pre-encoded wavBuffer from worker if available (avoids main thread encoding)
-        const wavBuffer = audio.wavBuffer ?? float32ToWav(audio.rawPcm, audio.sampleRate);
-        audio.blobUrl = this.createAndTrackBlobUrl(sentence.id, wavBuffer);
-      }
-
-      // Cache the result and track access
-      this.cache.set(sentence.id, audio);
-      this.touchAccess(sentence.id);
-
-      // Update state to ready
-      this.stateCallback?.(sentence.id, 'ready');
+      // Evict, create the blob URL now (not lazily at playback time, which would stall the
+      // main thread during sentence transitions), cache, and mark 'ready'. Skipped if another
+      // path already cached this sentence.
+      if (!this.commitAudio(audio)) return;
 
       // Notify that an item completed (for continuous queue extension)
       this.config.onItemComplete?.(sentence.id, this.cache.size);
 
       // Cache the result in service worker (async, non-blocking)
       if (this.audioCacheEnabled && this.currentBookId && audio.wavBuffer) {
-        const cacheParams: AudioCacheParams = {
-          bookId: this.currentBookId,
-          chapterId: parseInt(sentence.chapterId) || 0,
-          sentenceId: sentence.id,
-          text: sentence.text,
-          voice: this.currentVoice,
-          speechRate: this.currentSpeechRate,
-        };
-
-        this.audioCache.cacheAudio(cacheParams, new Blob([audio.wavBuffer], { type: 'audio/wav' }))
+        this.audioCache.cacheAudio(this.cacheParamsFor(sentence), new Blob([audio.wavBuffer], { type: 'audio/wav' }))
           .catch(err => console.warn('[Preload] Failed to cache audio:', err));
       }
 
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
-        // Cancelled - don't report as error
+        // Cancelled - don't report as error (repainted 'pending' in finally if needed)
       } else {
         console.error('Preload failed for sentence:', sentence.id, error);
-        this.stateCallback?.(sentence.id, 'error');
+        this.emitState(sentence.id, 'error');
       }
     } finally {
-      // Remove from active requests
-      this.activeRequests.delete(sentence.id);
+      // Remove from active requests - only if the slot still holds THIS request. If it was
+      // cancelled and a newer request for the same id has since started, leave that one.
+      if (this.activeRequests.get(sentence.id) === request) {
+        this.activeRequests.delete(sentence.id);
+      }
+      if (abortController.signal.aborted) {
+        this.markPendingIfCancelled(sentence.id);
+      }
       // Continue processing queue to fill available slot
       this.processQueue();
     }
@@ -499,7 +573,7 @@ export class PreloadQueueManager {
       // Synthesis starting for the whole batch → flip each from 'queued' to
       // 'preloading' (pulsing orange).
       for (const s of batch.sentences) {
-        this.stateCallback?.(s.id, 'preloading');
+        this.emitState(s.id, 'preloading');
       }
 
       // Use fewer steps for urgent requests (priority 0 = current sentence)
@@ -516,34 +590,35 @@ export class PreloadQueueManager {
       // Split audio and create SentenceAudio for each
       const audioObjects = await this.splitBatchedAudio(batch, result);
 
-      // Cache each sentence's audio
+      // Cache each sentence's audio (blob URL created now; for batched audio there is no
+      // per-sentence wavBuffer, so commitAudio falls back to encoding). Sentences another
+      // path cached meanwhile keep their existing entry.
       for (const audio of audioObjects) {
-        this.evictIfNeeded();
-
-        // Create blob URL NOW during preload (not lazily at playback time)
-        // Note: For batched audio, wavBuffer is not available (was for whole batch), so we fallback to encoding
-        if (!audio.blobUrl) {
-          const wavBuffer = audio.wavBuffer ?? float32ToWav(audio.rawPcm, audio.sampleRate);
-          audio.blobUrl = this.createAndTrackBlobUrl(audio.sentenceId, wavBuffer);
+        if (this.commitAudio(audio)) {
+          this.config.onItemComplete?.(audio.sentenceId, this.cache.size);
         }
-
-        this.cache.set(audio.sentenceId, audio);
-        this.touchAccess(audio.sentenceId);
-        this.stateCallback?.(audio.sentenceId, 'ready');
-        this.config.onItemComplete?.(audio.sentenceId, this.cache.size);
       }
 
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) {
         console.error('Batch preload failed:', error);
         for (const s of batch.sentences) {
-          this.stateCallback?.(s.id, 'error');
+          this.emitState(s.id, 'error');
         }
       }
     } finally {
-      for (const s of batch.sentences) {
-        this.activeRequests.delete(s.id);
-        this.queuedIds.delete(s.id);
+      const aborted = batch.abortController.signal.aborted;
+      for (const req of batch.requests) {
+        const id = req.sentence.id;
+        // Identity check: don't delete a newer request for the same id. (queuedIds is not
+        // touched here: collectBatch already removed these ids, and deleting again would
+        // orphan a re-queued entry for the same sentence.)
+        if (this.activeRequests.get(id) === req) {
+          this.activeRequests.delete(id);
+        }
+        if (aborted) {
+          this.markPendingIfCancelled(id);
+        }
       }
       this.processQueue();
     }
@@ -659,6 +734,7 @@ export class PreloadQueueManager {
       this.accessOrder.delete(toEvict);
       this.revokeBlob(toEvict);
       this.cache.delete(toEvict);
+      this.markPendingIfEvicted(toEvict);
     }
   }
 
@@ -704,6 +780,39 @@ export class PreloadQueueManager {
   }
 
   /**
+   * Cache freshly produced audio: evict if needed, create its blob URL, store it, and mark it
+   * 'ready'. Returns false (and changes nothing) if another path already cached this sentence,
+   * so a late duplicate never replaces the entry or revokes a blob URL that may be playing.
+   */
+  private commitAudio(audio: SentenceAudio): boolean {
+    if (this.cache.has(audio.sentenceId)) return false;
+
+    this.evictIfNeeded();
+
+    if (!audio.blobUrl) {
+      // Optimization #3: Use pre-encoded wavBuffer from worker if available (avoids main thread encoding)
+      const wavBuffer = audio.wavBuffer ?? float32ToWav(audio.rawPcm, audio.sampleRate);
+      audio.blobUrl = this.createAndTrackBlobUrl(audio.sentenceId, wavBuffer);
+    }
+
+    this.cache.set(audio.sentenceId, audio);
+    this.touchAccess(audio.sentenceId);
+    this.emitState(audio.sentenceId, 'ready');
+    return true;
+  }
+
+  private cacheParamsFor(sentence: Sentence): AudioCacheParams {
+    return {
+      bookId: this.currentBookId,
+      chapterId: parseInt(sentence.chapterId) || 0,
+      sentenceId: sentence.id,
+      text: sentence.text,
+      voice: this.currentVoice,
+      speechRate: this.currentSpeechRate,
+    };
+  }
+
+  /**
    * Create a SentenceAudio object from synthesis result
    * WAV/blob URL creation is deferred until getAudio() for faster preloading
    */
@@ -731,8 +840,8 @@ export class PreloadQueueManager {
    * Used when retrieving audio from service worker cache
    */
   private async createSentenceAudioFromBlob(sentence: Sentence, blob: Blob): Promise<SentenceAudio> {
+    // Blob URL is created by commitAudio() once we know this audio is actually cached
     const wavBuffer = await blob.arrayBuffer();
-    const blobUrl = this.createAndTrackBlobUrl(sentence.id, wavBuffer);
 
     // Read the actual model rate from the PCM WAV header (Inflect is 24 kHz).
     const wavView = new DataView(wavBuffer);
@@ -742,13 +851,12 @@ export class PreloadQueueManager {
     const duration = dataSize / (sampleRate * blockAlign);
 
     // We don't have raw PCM from cached blob, so create an empty Float32Array
-    // This is okay because cached audio already has blobUrl and wavBuffer
+    // This is okay because cached audio has wavBuffer (blobUrl is added by commitAudio)
     const rawPcm = new Float32Array(0);
 
     return {
       sentenceId: sentence.id,
       text: sentence.text,
-      blobUrl,
       wavBuffer,
       rawPcm,
       duration,
@@ -856,7 +964,12 @@ export class PreloadQueueManager {
 
   /**
    * Prepare a single sentence (for immediate playback)
-   * Returns cached audio or synthesizes it
+   * Returns cached audio or synthesizes it on the urgent path (urgentSteps).
+   *
+   * Concurrent calls for the same sentence share one synthesis. A caller's `signal` only
+   * rejects that caller's await (AbortError); the shared synthesis is aborted once every
+   * caller still waiting on it has aborted. Urgent work is not counted against
+   * maxConcurrentTTS, but the background queue treats it as in flight and won't re-queue it.
    */
   async prepareSentence(
     sentence: Sentence,
@@ -864,53 +977,125 @@ export class PreloadQueueManager {
   ): Promise<SentenceAudio> {
     // Check cache first (and update LRU)
     const cached = this.getAudio(sentence.id);
-    if (cached) return cached;
-
-    // Check service worker cache before synthesizing
-    if (this.audioCacheEnabled && this.currentBookId) {
-      const cacheParams: AudioCacheParams = {
-        bookId: this.currentBookId,
-        chapterId: parseInt(sentence.chapterId) || 0,
-        sentenceId: sentence.id,
-        text: sentence.text,
-        voice: this.currentVoice,
-        speechRate: this.currentSpeechRate,
-      };
-
-      const cachedBlob = await this.audioCache.getCachedAudio(cacheParams);
-      if (cachedBlob) {
-        // Use cached audio
-        const audio = await this.createSentenceAudioFromBlob(sentence, cachedBlob);
-        this.evictIfNeeded();
-        this.cache.set(sentence.id, audio);
-        this.touchAccess(sentence.id);
-        this.stateCallback?.(sentence.id, 'ready');
-        console.log(`[Preload] Cache HIT for urgent sentence: ${sentence.id}`);
-        return audio;
-      }
+    if (cached) {
+      // Caller is about to play it: AudioSyncService owns its colour from here on
+      this.emittedState.delete(sentence.id);
+      return cached;
     }
+    if (signal?.aborted) throw abortError();
 
-    // If this specific sentence is already being processed, cancel it
-    // Otherwise, let it queue naturally - no need to nuke all preloads
-    const existingRequest = this.activeRequests.get(sentence.id);
+    const urgent = this.urgentRequests.get(sentence.id) ?? this.startUrgentRequest(sentence);
+    return this.awaitUrgentRequest(sentence.id, urgent, signal);
+  }
+
+  /**
+   * Register urgent work for a sentence and start it. Registration happens synchronously,
+   * before any await, so prioritize/extendQueue/startSession/preloadFullChapter see it at once.
+   */
+  private startUrgentRequest(sentence: Sentence): UrgentRequest {
+    const id = sentence.id;
+
+    // If this specific sentence is already being processed in the background, cancel it and
+    // retry on the urgent path. Otherwise let it queue naturally - no need to nuke all preloads.
+    const existingRequest = this.activeRequests.get(id);
     if (existingRequest) {
-      console.log(`[Preload] Cancelling existing request for sentence ${sentence.id} to retry`);
+      console.log(`[Preload] Cancelling existing request for sentence ${id} to retry`);
       existingRequest.abortController.abort();
-      this.activeRequests.delete(sentence.id);
+      this.activeRequests.delete(id);
     }
 
     // Remove from queue if it's waiting there
-    if (this.queuedIds.has(sentence.id)) {
-      console.log(`[Preload] Removing sentence ${sentence.id} from queue to prioritize`);
+    if (this.queuedIds.has(id)) {
+      console.log(`[Preload] Removing sentence ${id} from queue to prioritize`);
       // Note: This leaves the item in the heap, but it will be skipped when dequeued
       // since we remove it from queuedIds. This is acceptable overhead.
-      this.queuedIds.delete(sentence.id);
+      this.queuedIds.delete(id);
     }
 
-    // Update state
-    this.stateCallback?.(sentence.id, 'preloading');
+    const controller = new AbortController();
+    const urgent = { controller, waiters: 0 } as UrgentRequest;
+    this.urgentRequests.set(id, urgent);
+    urgent.promise = this.runUrgentRequest(sentence, controller.signal).finally(() => {
+      if (this.urgentRequests.get(id) === urgent) {
+        this.urgentRequests.delete(id);
+      }
+      if (controller.signal.aborted) {
+        this.markPendingIfCancelled(id);
+      }
+    });
+    return urgent;
+  }
 
+  /**
+   * Await shared urgent work on behalf of one caller, honouring that caller's signal.
+   */
+  private awaitUrgentRequest(
+    id: string,
+    urgent: UrgentRequest,
+    signal?: AbortSignal
+  ): Promise<SentenceAudio> {
+    urgent.waiters++;
+    return new Promise<SentenceAudio>((resolve, reject) => {
+      let settled = false;
+      const finish = (): void => {
+        settled = true;
+        urgent.waiters--;
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const onAbort = (): void => {
+        if (settled) return;
+        finish();
+        if (urgent.waiters === 0) {
+          // Last interested caller gave up: abort the synthesis and unregister it now, so a
+          // later prepareSentence() starts fresh instead of joining a dying request.
+          if (this.urgentRequests.get(id) === urgent) {
+            this.urgentRequests.delete(id);
+          }
+          urgent.controller.abort();
+          this.markPendingIfCancelled(id);
+        }
+        reject(abortError());
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      urgent.promise.then(
+        audio => {
+          if (settled) return;
+          finish();
+          // Caller is about to play it: AudioSyncService owns its colour from here on
+          this.emittedState.delete(id);
+          resolve(audio);
+        },
+        error => {
+          if (settled) return;
+          finish();
+          reject(error);
+        }
+      );
+    });
+  }
+
+  /**
+   * The urgent synthesis itself (service-worker cache lookup, then urgentSteps synthesis).
+   */
+  private async runUrgentRequest(sentence: Sentence, signal: AbortSignal): Promise<SentenceAudio> {
     try {
+      // Check service worker cache before synthesizing
+      if (this.audioCacheEnabled && this.currentBookId) {
+        const cachedBlob = await this.audioCache.getCachedAudio(this.cacheParamsFor(sentence));
+        if (cachedBlob) {
+          const audio = await this.createSentenceAudioFromBlob(sentence, cachedBlob);
+          console.log(`[Preload] Cache HIT for urgent sentence: ${sentence.id}`);
+          return this.commitAudio(audio) ? audio : (this.cache.get(sentence.id) ?? audio);
+        }
+      }
+
+      if (signal.aborted) throw abortError();
+      const raced = this.cache.get(sentence.id);
+      if (raced) return raced;
+
+      // Update state
+      this.emitState(sentence.id, 'preloading');
+
       // Use urgent steps for immediate playback (user is waiting)
       const result = await this.ttsManager.synthesize(
         sentence.text,
@@ -922,41 +1107,24 @@ export class PreloadQueueManager {
         signal
       );
 
-      // Evict if needed
-      this.evictIfNeeded();
-
       const audio = await this.createSentenceAudio(sentence, result);
 
-      // Create blob URL immediately (user is waiting for playback anyway)
-      // Optimization #3: Use pre-encoded wavBuffer from worker if available
-      if (!audio.blobUrl) {
-        const wavBuffer = audio.wavBuffer ?? float32ToWav(audio.rawPcm, audio.sampleRate);
-        audio.blobUrl = this.createAndTrackBlobUrl(sentence.id, wavBuffer);
+      // Evict, create blob URL immediately (user is waiting for playback anyway), cache, 'ready'.
+      // If a racing path cached it first, return that entry instead.
+      if (!this.commitAudio(audio)) {
+        return this.cache.get(sentence.id) ?? audio;
       }
-
-      this.cache.set(sentence.id, audio);
-      this.touchAccess(sentence.id);
-      this.stateCallback?.(sentence.id, 'ready');
 
       // Cache the result in service worker (async, non-blocking)
       if (this.audioCacheEnabled && this.currentBookId && audio.wavBuffer) {
-        const cacheParams: AudioCacheParams = {
-          bookId: this.currentBookId,
-          chapterId: parseInt(sentence.chapterId) || 0,
-          sentenceId: sentence.id,
-          text: sentence.text,
-          voice: this.currentVoice,
-          speechRate: this.currentSpeechRate,
-        };
-
-        this.audioCache.cacheAudio(cacheParams, new Blob([audio.wavBuffer], { type: 'audio/wav' }))
+        this.audioCache.cacheAudio(this.cacheParamsFor(sentence), new Blob([audio.wavBuffer], { type: 'audio/wav' }))
           .catch(err => console.warn('[Preload] Failed to cache audio:', err));
       }
 
       return audio;
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) {
-        this.stateCallback?.(sentence.id, 'error');
+        this.emitState(sentence.id, 'error');
       }
       throw error;
     }
@@ -973,13 +1141,15 @@ export class PreloadQueueManager {
     // visual state so the moving look-ahead window repaints orange as playback
     // advances (previously this silently early-returned and the window stalled).
     if (this.queuedIds.has(sentence.id)) {
-      this.stateCallback?.(sentence.id, 'queued');
+      this.emitState(sentence.id, 'queued');
       return;
     }
     if (this.activeRequests.has(sentence.id)) {
-      this.stateCallback?.(sentence.id, 'preloading');
+      this.emitState(sentence.id, 'preloading');
       return;
     }
+    // Being synthesized on the urgent path (prepareSentence) - already in flight
+    if (this.urgentRequests.has(sentence.id)) return;
 
     // Add with priority 0 (highest) - heap will place at front
     this.queue.push({
@@ -989,7 +1159,7 @@ export class PreloadQueueManager {
     });
     this.queuedIds.add(sentence.id);  // Performance optimization #4
 
-    this.stateCallback?.(sentence.id, 'queued');
+    this.emitState(sentence.id, 'queued');
     this.processQueue();
   }
 
@@ -1017,6 +1187,7 @@ export class PreloadQueueManager {
       if (this.cache.has(sentence.id)) continue;
       if (this.queuedIds.has(sentence.id)) continue;
       if (this.activeRequests.has(sentence.id)) continue;
+      if (this.urgentRequests.has(sentence.id)) continue;
 
       // Respect char limit (but always allow at least one)
       if (toAdd.length > 0 && totalChars >= this.config.preloadCharLimit) {
@@ -1047,7 +1218,7 @@ export class PreloadQueueManager {
       });
       this.queuedIds.add(sentence.id);
 
-      this.stateCallback?.(sentence.id, 'queued');
+      this.emitState(sentence.id, 'queued');
     }
 
     // Continue processing if not already
@@ -1073,20 +1244,23 @@ export class PreloadQueueManager {
       return;
     }
 
-    // Cancel existing session (different chapter, or no active session)
-    this.cancelSession();
+    // Cancel existing session (different chapter, or no active session). Repainting the
+    // cancelled ids is deferred until re-queueing is done to avoid 'pending' -> 'queued' flicker.
+    const cancelled = this.cancelSessionInternal();
     this.sessionController = new AbortController();
     this.preloadSessionSentences = sentences;
 
     // Queue ALL remaining sentences (no count/char limits)
     const toPreload: Sentence[] = [];
     for (let i = startIndex; i < sentences.length; i++) {
-      if (!this.cache.has(sentences[i].id)) {
+      const id = sentences[i].id;
+      if (!this.cache.has(id) && !this.urgentRequests.has(id)) {
         toPreload.push(sentences[i]);
       }
     }
 
     if (toPreload.length === 0) {
+      this.markCancelledPending(cancelled);
       return; // Nothing to preload
     }
 
@@ -1103,7 +1277,7 @@ export class PreloadQueueManager {
       this.queuedIds.add(sentence.id);  // Performance optimization #4
       // 'queued' = waiting for a worker (static orange); becomes 'preloading'
       // (pulsing) at synthesis start, then 'ready'.
-      this.stateCallback?.(sentence.id, 'queued');
+      this.emitState(sentence.id, 'queued');
     });
 
     // Link abort controllers to session (use once: true to prevent listener accumulation)
@@ -1117,6 +1291,9 @@ export class PreloadQueueManager {
     }, { once: true });
 
     console.log(`[Preload] Queued ${toPreload.length} sentences for full chapter preload (maxConcurrent: ${this.config.maxConcurrentTTS})`);
+
+    // Cancelled sentences that weren't re-queued go back to 'pending'
+    this.markCancelledPending(cancelled);
 
     // Start processing
     this.processQueue();
@@ -1134,16 +1311,20 @@ export class PreloadQueueManager {
    * Check if a sentence is currently being processed
    */
   isProcessing(sentenceId: string): boolean {
-    return this.activeRequests.has(sentenceId);
+    return this.activeRequests.has(sentenceId) || this.urgentRequests.has(sentenceId);
   }
 
   /**
    * Clear all cached audio and revoke blob URLs
    */
   clearCache(): void {
+    const cleared = [...this.cache.keys()];
     this.revokeAllBlobs();
     this.cache.clear();
     this.accessOrder.clear();
+    for (const id of cleared) {
+      this.markPendingIfEvicted(id);
+    }
   }
 
   /**
@@ -1155,6 +1336,7 @@ export class PreloadQueueManager {
         this.revokeBlob(id);
         this.cache.delete(id);
         this.accessOrder.delete(id);
+        this.markPendingIfEvicted(id);
       }
     }
   }
@@ -1194,6 +1376,13 @@ export class PreloadQueueManager {
 
     this.currentPlayingIndex = index;
     this.currentSentences = sentences;
+
+    // Playback has reached this sentence: AudioSyncService paints it 'playing'/'played' from
+    // now on, so it's no longer ours to reset to 'pending' on eviction or cancellation.
+    const current = sentences[index];
+    if (current) {
+      this.emittedState.delete(current.id);
+    }
 
     // Reprioritize the next 1-2 sentences onto the fast path (urgentSteps).
     // preloadFullChapter queues every sentence with priority=index so only index 0
@@ -1460,7 +1649,13 @@ export class PreloadQueueManager {
    * Dispose of resources
    */
   dispose(): void {
+    this.disposed = true;  // No state emissions from here on (incl. late async completions)
     this.cancelSession();
+    for (const urgent of this.urgentRequests.values()) {
+      urgent.controller.abort();
+    }
+    this.urgentRequests.clear();
+    this.emittedState.clear();
     this.clearASRQueue();
     this.revokeAllBlobs();
     this.cache.clear();
