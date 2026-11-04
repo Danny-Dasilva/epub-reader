@@ -154,8 +154,12 @@ let inventory: InflectSymbolInventory | null = null;
 let durationSession: ort.InferenceSession | null = null;
 let decodeSession: ort.InferenceSession | null = null;
 let sampleRate = 24_000;
+// Synthesis request ids this worker has accepted but not yet finished, whether
+// running or still waiting on inferenceMutex. 'cancelAll' cancels all of them.
+const activeRequests = new Set<string>();
+// Subset of activeRequests that has been cancelled. Only ids in activeRequests are
+// ever added, and entries are removed when the request finishes, so it can't leak.
 const cancelledRequests = new Set<string>();
-let currentRequestId: string | null = null;
 
 class Mutex {
   private locked = false;
@@ -361,10 +365,23 @@ async function synthesize(text: string, speed: number, requestId: string): Promi
   return { waveform, duration: waveform.length / sampleRate };
 }
 
-async function synthesizeStreaming(text: string, speed: number, requestId: string): Promise<void> {
+/**
+ * Streams chunks for one request. Returns true once the terminal isLast chunk has
+ * been posted, false if it stopped early because the request was cancelled.
+ */
+async function synthesizeStreaming(text: string, speed: number, requestId: string): Promise<boolean> {
   const chunks = splitInflectText(text);
+  if (chunks.length === 0) {
+    // Empty text still needs a terminal message so the manager frees the worker
+    // and settles the caller's promise.
+    const audio = new Float32Array(0);
+    self.postMessage({
+      type: 'chunk', id: requestId, audio, chunkIndex: 0, isLast: true, sampleRate,
+    } as WorkerChunkResponse, { transfer: [audio.buffer] });
+    return true;
+  }
   for (let index = 0; index < chunks.length; index++) {
-    if (cancelledRequests.has(requestId)) return;
+    if (cancelledRequests.has(requestId)) return false;
     const chunk = await inferChunk(chunks[index], speed, index);
     const pause = index > 0
       ? new Float32Array(Math.round(sampleRate * boundaryPauseSeconds(chunks[index - 1])))
@@ -375,6 +392,7 @@ async function synthesizeStreaming(text: string, speed: number, requestId: strin
       isLast: index === chunks.length - 1, sampleRate,
     } as WorkerChunkResponse, { transfer: [audio.buffer] });
   }
+  return true;
 }
 
 async function predictDuration(text: string, speed: number): Promise<number> {
@@ -434,13 +452,26 @@ async function initialize(baseUrl: string, modelPath: string, numThreads: number
   return 'wasm';
 }
 
+function postCancelled(id: string): void {
+  self.postMessage({ type: 'cancelled', id } as WorkerCancelledResponse);
+}
+
+/**
+ * Every synthesis request posts exactly one terminal message: 'complete' / last
+ * 'chunk', 'cancelled', or (via the onmessage catch) 'error'. A request cancelled
+ * while waiting on the mutex posts 'cancelled' without running inference.
+ */
 async function runSynthesisMessage(message: WorkerSynthesizeMessage): Promise<void> {
-  currentRequestId = message.id;
+  activeRequests.add(message.id);
   await inferenceMutex.acquire();
   try {
+    if (cancelledRequests.has(message.id)) {
+      postCancelled(message.id);
+      return;
+    }
     const result = await synthesize(message.text, message.speed, message.id);
     if (!result) {
-      self.postMessage({ type: 'cancelled', id: message.id } as WorkerCancelledResponse);
+      postCancelled(message.id);
       return;
     }
     const wavBuffer = float32ToWav(result.waveform, sampleRate);
@@ -451,22 +482,26 @@ async function runSynthesisMessage(message: WorkerSynthesizeMessage): Promise<vo
     } as WorkerCompleteResponse, { transfer: [result.waveform.buffer, wavBuffer] });
   } finally {
     inferenceMutex.release();
-    currentRequestId = null;
+    activeRequests.delete(message.id);
     cancelledRequests.delete(message.id);
   }
 }
 
 async function runStreamingMessage(message: WorkerSynthesizeStreamingMessage): Promise<void> {
-  currentRequestId = message.id;
+  activeRequests.add(message.id);
   await inferenceMutex.acquire();
   try {
-    await synthesizeStreaming(message.text, message.speed, message.id);
     if (cancelledRequests.has(message.id)) {
-      self.postMessage({ type: 'cancelled', id: message.id } as WorkerCancelledResponse);
+      postCancelled(message.id);
+      return;
     }
+    // If the last chunk went out, that chunk was the terminal message even if a
+    // cancel arrived meanwhile; only post 'cancelled' when streaming stopped early.
+    const finished = await synthesizeStreaming(message.text, message.speed, message.id);
+    if (!finished) postCancelled(message.id);
   } finally {
     inferenceMutex.release();
-    currentRequestId = null;
+    activeRequests.delete(message.id);
     cancelledRequests.delete(message.id);
   }
 }
@@ -506,10 +541,10 @@ self.onmessage = async (event: MessageEvent<WorkerInMessage>) => {
         self.postMessage({ type: 'voiceChanged', voiceStylePath: message.voiceStylePath } as WorkerVoiceChangedResponse);
         break;
       case 'cancel':
-        cancelledRequests.add(message.id);
+        if (activeRequests.has(message.id)) cancelledRequests.add(message.id);
         break;
       case 'cancelAll':
-        if (currentRequestId) cancelledRequests.add(currentRequestId);
+        for (const id of activeRequests) cancelledRequests.add(id);
         break;
       case 'setSpeed':
         break;
