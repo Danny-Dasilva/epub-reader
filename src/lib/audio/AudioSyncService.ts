@@ -42,7 +42,8 @@ export class AudioSyncService {
   private player: AudioPlayer;
   private config: AudioSyncConfig;
   private isInitialized = false;
-  private isInitializing = false;
+  // Shared in-flight initialization: concurrent callers await the same attempt
+  private initPromise: Promise<void> | null = null;
   private eventHandlers: Set<PlaybackEventHandler> = new Set();
   private playerUnsubscribe: (() => void) | null = null;  // removes only THIS service's player forwarder
   private stateCallback: PreloadStateCallback | null = null;
@@ -93,41 +94,39 @@ export class AudioSyncService {
    */
   async initialize(progressCallback?: SyncProgressCallback): Promise<void> {
     if (this.isInitialized) return;
-    if (this.isInitializing) {
-      // Wait for existing initialization
-      while (this.isInitializing) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-      return;
+    // Concurrent callers share ONE attempt and receive its result or its
+    // rejection (the old polling loop returned success even if the first attempt
+    // threw). A failed attempt clears the promise so a later call can retry.
+    if (!this.initPromise) {
+      this.initPromise = this.runInitialize(progressCallback).catch((error) => {
+        this.initPromise = null;
+        throw error;
+      });
     }
+    return this.initPromise;
+  }
 
-    this.isInitializing = true;
+  private async runInitialize(progressCallback?: SyncProgressCallback): Promise<void> {
+    progressCallback?.('loading', 0, 'Initializing TTS engine...');
 
-    try {
-      progressCallback?.('loading', 0, 'Initializing TTS engine...');
+    // Initialize the TTS worker
+    this.backend = await this.ttsManager.initialize(
+      this.config.ttsModelPath,
+      this.config.voiceStylePath,
+      (modelName, current, total) => {
+        const progress = (current / total) * 90;
+        progressCallback?.('loading', progress, `Loading ${modelName}...`);
+      },
+      this.config.enableLazyVoiceLoading
+    );
 
-      // Initialize the TTS worker
-      this.backend = await this.ttsManager.initialize(
-        this.config.ttsModelPath,
-        this.config.voiceStylePath,
-        (modelName, current, total) => {
-          const progress = (current / total) * 90;
-          progressCallback?.('loading', progress, `Loading ${modelName}...`);
-        },
-        this.config.enableLazyVoiceLoading
-      );
+    // NOTE: AudioContext is NOT created here to avoid browser autoplay policy errors.
+    // It will be lazily initialized on first playSentence() call (after user gesture).
 
-      // NOTE: AudioContext is NOT created here to avoid browser autoplay policy errors.
-      // It will be lazily initialized on first playSentence() call (after user gesture).
+    // (Player event forwarder is registered synchronously in the constructor.)
 
-      // (Player event forwarder is registered synchronously in the constructor.)
-
-      progressCallback?.('ready', 100, 'Ready');
-      this.isInitialized = true;
-
-    } finally {
-      this.isInitializing = false;
-    }
+    progressCallback?.('ready', 100, 'Ready');
+    this.isInitialized = true;
   }
 
   /**
@@ -182,9 +181,16 @@ export class AudioSyncService {
    * @param explicitPlaybackRate - Optional explicit playback rate (avoids race with async React effects)
    */
   async playSentenceStreaming(sentence: Sentence, signal?: AbortSignal, explicitPlaybackRate?: number): Promise<void> {
+    // A superseded call must not touch the player after an await: it would stop
+    // (stopInternal) the playback of the session that replaced it.
+    const throwIfAborted = () => {
+      if (signal?.aborted) throw new DOMException('Playback superseded', 'AbortError');
+    };
+
     // Ensure AudioContext is set on first play
     if (!this.preloadManager.hasAudioContext()) {
       this.preloadManager.setAudioContext(await this.player.getAudioContext());
+      throwIfAborted();
     }
 
     // Check if audio is already cached - use non-streaming path for instant playback
@@ -196,7 +202,11 @@ export class AudioSyncService {
         this.player.setPlaybackRate(explicitPlaybackRate);
       }
       await this.player.playSentence(cachedAudio);
-      this.prepareNextSentenceAudio();
+      // Arm the near-end hand-off only if this session is still current; a stale
+      // completion must not queue a look-ahead for a sentence that was superseded.
+      if (!signal?.aborted) {
+        this.prepareNextSentenceAudio();
+      }
       return;
     }
 
@@ -228,6 +238,7 @@ export class AudioSyncService {
           preprocessedText: sentence.preprocessedText
         }
       );
+      throwIfAborted();
 
       // Create SentenceAudio object for tracking (some fields not used in streaming mode)
       const sentenceAudio: SentenceAudio = {
@@ -416,10 +427,27 @@ export class AudioSyncService {
   }
 
   /**
-   * Schedule more look-ahead sentences in gapless mode
+   * Schedule more look-ahead sentences. In gapless mode the player pulls from its
+   * look-ahead callback; otherwise pre-warm the next cached sentence (relative to
+   * setCurrentPlayingIndex) so the player can hand off to it near the end of the
+   * current one.
    */
   scheduleMoreSentences(): void {
-    this.player.scheduleMoreSentences();
+    if (this.player.isGaplessMode()) {
+      this.player.scheduleMoreSentences();
+    } else {
+      this.prepareNextSentenceAudio();
+    }
+  }
+
+  /**
+   * True while the player is emitting sentenceStart for a near-end hand-off to
+   * `sentenceId` (i.e. the player itself advanced to this sentence, rather than a
+   * playSentence/streaming start requested by the caller). Only meaningful when
+   * called synchronously from a sentenceStart event handler.
+   */
+  isHandoffStart(sentenceId: string): boolean {
+    return this.player.getHandoffSentenceId() === sentenceId;
   }
 
   /**
@@ -443,16 +471,17 @@ export class AudioSyncService {
   }
 
   /**
-   * Resume playback (handles streaming, gapless, and legacy modes)
+   * Resume playback (handles streaming, gapless, and legacy modes).
+   * Returns false when there is nothing resumable (stopped, ended, or no audio
+   * loaded) so the caller can start fresh playback instead.
    */
-  resume(): void {
+  resume(): boolean {
     if (this.player.isStreaming()) {
-      this.player.resumeStreaming();
-    } else if (this.player.isGaplessMode()) {
-      this.player.resumeGapless();
-    } else {
-      this.player.resume();
+      return this.player.resumeStreaming();
     }
+    // Gapless and single-sentence HTML playback share the same element resume.
+    return this.player.resume();
+
   }
 
   /**
@@ -580,6 +609,15 @@ export class AudioSyncService {
   }
 
   /**
+   * Mark a sentence as playing (used when the player hands off to it directly,
+   * bypassing playSentenceStreaming which normally sets this state)
+   */
+  markPlaying(sentenceId: string): void {
+    this.stateCallback?.(sentenceId, 'playing');
+  }
+
+
+  /**
    * Clear all cached audio
    */
   clearCache(): void {
@@ -687,8 +725,10 @@ export class AudioSyncService {
     this.playerUnsubscribe = null;
     this.eventHandlers.clear();
     this.isInitialized = false;
+    this.initPromise = null;
   }
 }
+
 
 // Singleton instance
 let sharedService: AudioSyncService | null = null;

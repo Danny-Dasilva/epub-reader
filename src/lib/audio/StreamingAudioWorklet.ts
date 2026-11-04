@@ -97,7 +97,17 @@ export class StreamingAudioWorklet {
     this.workletNode.port.onmessage = (event) => {
       const message = event.data;
 
+      // Drop processor messages from a previous generation. A 'started'/'ended'/
+      // 'progress' posted before the processor handled our latest reset would
+      // otherwise reach the callbacks installed for the NEW sentence (callbacks
+      // are swapped wholesale in setCallbacks, so AudioPlayer's closure-level
+      // session check can't tell them apart).
+      if (message.generation !== undefined && message.generation !== this.generation) {
+        return;
+      }
+
       if (message.type === 'started') {
+
         this.onStarted?.();
       } else if (message.type === 'ended') {
         this.onEnded?.(message.samplesConsumed);

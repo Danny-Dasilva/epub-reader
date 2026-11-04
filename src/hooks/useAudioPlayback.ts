@@ -64,13 +64,11 @@ export function useAudioPlayback() {
   const markASRComplete = useSentenceStateStore(state => state.markASRComplete);
   const clearASRCompleted = useSentenceStateStore(state => state.clearASRCompleted);
 
-  // Sleep timer store
-  const sleepTimerActive = useSleepTimerStore(state => state.isActive);
-  const sleepTimerPreset = useSleepTimerStore(state => state.selectedPreset);
-  const stopSleepTimer = useSleepTimerStore(state => state.stopTimer);
-
-  // Ref to track which sentence the current play session started from
-  // (distinct from playingSentenceIdRef which tracks gapless advancement)
+  // Sentence the current play session owns: set when playback of a sentence is
+  // started (play effect / skipToSentence) or adopted from a player hand-off.
+  // null means "nothing resumable" (stopped, ended, errored, chapter/voice/rate
+  // change) — the next Play then starts the current sentence fresh instead of
+  // resuming whatever audio element happens to be loaded.
   const sessionSentenceIdRef = useRef<string | null>(null);
 
   // Initialize audio service
@@ -199,25 +197,40 @@ export function useAudioPlayback() {
           }
           break;
 
-        case 'sentenceStart':
-          // Gapless mode: Audio player is advancing to next pre-scheduled sentence
-          // Update navigation state to match (single source of truth)
-          if (event.sentenceId && service) {
-            // FIX Bug 2: Initialize highlight for new sentence (clears stale highlight)
-            setHighlight(event.sentenceId, null);
-            service.updateGaplessPosition(event.sentenceId);
-            // Update navigation state to match
+        case 'sentenceStart': {
+          const sentenceId = event.sentenceId;
+          if (!sentenceId || !service) break;
+
+          if (service.isHandoffStart(sentenceId)) {
+            // Near-end hand-off: the player has ALREADY started the next sentence
+            // (its audio is playing). Adopt it as this session's sentence BEFORE
+            // moving the index, so the play effect sees "already playing this
+            // sentence" and does not restart it. The finished sentence still gets
+            // its own sentenceEnd (bookkeeping only — see below).
             // Use getState() inside event handler to get fresh chapter data
             const navState = useNavigationStore.getState();
             const chapter = navState.currentBook?.chapters[navState.currentChapterIndex];
-            if (chapter) {
-              const index = chapter.sentences.findIndex(s => s.id === event.sentenceId);
-              if (index !== -1) {
-                setSentenceIndex(index);
-              }
+            const index = chapter ? chapter.sentences.findIndex(s => s.id === sentenceId) : -1;
+            if (chapter && index !== -1) {
+              sessionSentenceIdRef.current = sentenceId;
+              // Keep cache-eviction protection / ASR / next look-ahead in step
+              service.setCurrentPlayingIndex(index, chapter.sentences);
+              service.markPlaying(sentenceId);
+              setHighlight(sentenceId, null);
+
+              setSentenceIndex(index);
             }
+            break;
           }
+
+          // A start for a sentence this session isn't playing is a superseded
+          // start; don't let it move highlight or navigation.
+          if (sentenceId !== sessionSentenceIdRef.current) break;
+
+          // FIX Bug 2: Initialize highlight for new sentence (clears stale highlight)
+          setHighlight(sentenceId, null);
           break;
+        }
 
         case 'sentenceEnd': {
           // Add completed sentence duration to cumulative time (for accurate timestamp display)
@@ -226,10 +239,6 @@ export function useAudioPlayback() {
           }
 
           const sentenceId = event.sentenceId;
-          const isGapless = service?.isGaplessMode() ?? false;
-
-          // For gapless mode: player handles transitions internally via sentenceStart events
-          // For streaming/legacy: we handle advancement in microtask to avoid race conditions
 
           // Defer ALL state updates to microtask to avoid race conditions with play effect
           queueMicrotask(() => {
@@ -248,27 +257,46 @@ export function useAudioPlayback() {
             // by playSentence/skipToSentence. Normal auto-advance never paused, so
             // there is nothing to clear here.
 
-            // Handle sentence advancement for non-gapless modes (streaming and legacy)
-            // Moving this here prevents race condition with the play effect
-            if (!isGapless) {
-              // Check store's isPlaying to respect user pause intent
-              // If user clicked pause, isPlaying will be false and we shouldn't advance
-              const stillPlaying = usePlaybackStore.getState().isPlaying;
-              if (stillPlaying) {
-                const hasNext = nextSentence();
-                if (!hasNext) {
-                  // End of chapter - handle sleep timer
-                  const currentSleepTimerActive = useSleepTimerStore.getState().isActive;
-                  const currentSleepTimerPreset = useSleepTimerStore.getState().selectedPreset;
+            // Only the end of the sentence this session is playing drives
+            // advancement. Any other sentenceEnd is the tail of a near-end hand-off
+            // (the player already moved on and the session adopted the next
+            // sentence) or stale — bookkeeping above only. Checked here, at
+            // microtask time, because a short sentence's onended emits
+            // sentenceEnd just before the hand-off's sentenceStart.
+            if (!sentenceId || sentenceId !== sessionSentenceIdRef.current) return;
 
-                  if (currentSleepTimerActive && currentSleepTimerPreset === 'chapter_end') {
-                    stopSleepTimer();
-                  }
-                  setIsPlaying(false);
-                }
-                // If hasNext, the play effect will be triggered by currentSentenceIndex change
+            // Check store's isPlaying to respect user pause intent
+            // If user clicked pause, isPlaying will be false and we shouldn't advance
+            if (!usePlaybackStore.getState().isPlaying) {
+              // The sentence finished while pause/stop was pending, so there is
+              // nothing left to resume: the next Play starts it fresh.
+              sessionSentenceIdRef.current = null;
+              return;
+            }
+
+            // Sleep timer "end of chapter": stop after the chapter's last sentence.
+            // (nextSentence() crosses chapters, so its return value only signals
+            // end of BOOK and can't be used for this.)
+            const sleepTimer = useSleepTimerStore.getState();
+            if (sleepTimer.isActive && sleepTimer.selectedPreset === 'chapter_end') {
+              const navState = useNavigationStore.getState();
+              const chapter = navState.currentBook?.chapters[navState.currentChapterIndex];
+              const lastSentence = chapter?.sentences[chapter.sentences.length - 1];
+              if (lastSentence?.id === sentenceId) {
+                sleepTimer.stopTimer();
+                sessionSentenceIdRef.current = null;
+                setIsPlaying(false);
+                return;
               }
             }
+
+            const hasNext = nextSentence();
+            if (!hasNext) {
+              // End of book
+              sessionSentenceIdRef.current = null;
+              setIsPlaying(false);
+            }
+            // If hasNext, the play effect will be triggered by currentSentenceIndex change
           });
           break;
         }
@@ -281,18 +309,51 @@ export function useAudioPlayback() {
           break;
 
         case 'stop':
-          // Playback stopped (end of chapter or explicit stop)
+          // Playback stopped (end of chapter or explicit stop). Stopped is not
+          // paused: nothing is resumable, the next Play starts fresh.
+          sessionSentenceIdRef.current = null;
           setIsPlaying(false);
           clearAudioPosition();
           break;
 
         case 'error':
           console.error('Playback error:', event.error);
+          sessionSentenceIdRef.current = null;
           setIsPlaying(false);
           break;
       }
     };
   }, [nextSentence, setIsPlaying, setPaused, setSentenceIndex]);
+
+  // Handle chapter changes - cancel operations and reset state.
+  //
+  // ORDER MATTERS: this effect is declared BEFORE the play effect so that, in a
+  // commit where the chapter changed, it ends the OLD session first and the play
+  // effect then starts the new chapter's session. (Declared after, an auto-advance
+  // across a chapter boundary would have its brand-new session aborted here,
+  // stalling playback with isPlaying=true.) A manual chapter change still stops
+  // playback deliberately via handleChapterChange → cancelAllOperations.
+  useEffect(() => {
+    const service = serviceRef.current;
+
+    // Cancel existing operations
+    endSession();
+    sessionSentenceIdRef.current = null;
+
+    // Clear highlights and states
+    clearHighlight();
+    clearAudioPosition();
+    clearSentenceStates();
+    clearASRCompleted();
+
+    if (!service || !currentBook) return;
+
+    const chapter = currentBook.chapters[currentChapterIndex];
+    if (chapter) {
+      // Preload entire chapter
+      service.preloadFullChapter(chapter.sentences, 0);
+    }
+  }, [currentChapterIndex, currentBook, clearSentenceStates, clearASRCompleted, endSession]);
 
   // Handle play state changes - passive effect that handles pause/resume and auto-advance
   // Manual skips are handled by skipToSentence directly to avoid race conditions
@@ -306,55 +367,52 @@ export function useAudioPlayback() {
     if (!sentence) return;
 
     if (isPlaying) {
-      // Check for resume FIRST - isPaused takes priority over session check
-      // because pause doesn't clear the session ID.
-      //
-      // PAUSE FORCE-RESUME GUARD: only resume if the current sentence is the one
-      // that was actually paused. sessionSentenceIdRef tracks the originally-playing
-      // sentence and is NOT updated when a near-end hand-off advances the index via
-      // sentenceStart -> setSentenceIndex. Without this identity gate, a hand-off-
-      // driven index change (sentence N -> N+1) re-runs this effect with isPaused
-      // still true and force-resumes audio for a DIFFERENT sentence.
-      if (isPaused && sessionSentenceIdRef.current === sentence.id) {
-        // Resume from pause (same sentence, just paused)
-        service.resume();
-        setPaused(false);
-      } else if (isPaused) {
-        // Paused but the index has advanced (e.g. a near-end hand-off fired before
-        // pause settled). Do NOT resume — stay paused for the new sentence. The
-        // user must explicitly resume.
-        return;
+      // PAUSE FORCE-RESUME GUARD: index/chapter changes while paused (user ↑/↓,
+      // media-session next/prev, a hand-off racing the pause) run with
+      // isPlaying=false and land in the pause branch below — they can never
+      // resume audio. isPlaying && isPaused is only reachable through an explicit
+      // play request (play button, Space, media session play, visibility restore,
+      // autoplay), since every handled play run clears isPaused (resume →
+      // setPaused(false), fresh start → startSession()). So here we only decide
+      // HOW to honour that request:
+      //  - resume, if the paused sentence IS the current one and the player still
+      //    holds resumable audio for it;
+      //  - otherwise start the current sentence fresh (the user navigated while
+      //    paused, or playback was stopped / ended / errored, which clears
+      //    sessionSentenceIdRef).
+      if (isPaused) {
+        if (sessionSentenceIdRef.current === sentence.id && service.resume()) {
+          setPaused(false);
+          service.preloadFullChapter(currentChapter.sentences, currentSentenceIndex + 1);
+          return;
+        }
+        // fall through to a fresh start
       } else if (sessionSentenceIdRef.current === sentence.id) {
         // Fix 10: Use ref instead of state for comparison
-        // Already playing/preparing this sentence (skipToSentence already started it)
-        // This prevents duplicate playback when clicking a sentence triggers both
-        // skipToSentence AND this effect via state changes
+        // Already playing/preparing this sentence (skipToSentence started it, or
+        // the player handed off to it). Don't restart it.
         service.preloadFullChapter(currentChapter.sentences, currentSentenceIndex + 1);
         return;
-      } else {
-        // New sentence (auto-advance from sentenceEnd or initial play) - start fresh
-        // In gapless mode, audio continues automatically via sentenceStart events
-        // This branch is for initial play or when not in gapless mode
-        if (!service.isGaplessMode()) {
-          const abortController = startSession();
-
-          // Sync ref IMMEDIATELY to prevent stale comparison on next effect run
-          sessionSentenceIdRef.current = sentence.id;
-
-          // Update playback position for cache eviction protection and ASR
-          service.setCurrentPlayingIndex(currentSentenceIndex, currentChapter.sentences);
-
-          // Always use playSentenceStreaming for sentence-by-sentence playback
-          // It handles both cached (instant via HTMLAudioElement) and uncached (streaming worklet)
-          // WITHOUT setting gapless mode, which allows sentenceEnd handler to advance properly
-          service.playSentenceStreaming(sentence, abortController.signal, audioPlaybackRate).catch(error => {
-            if (error.name !== 'AbortError') {
-              console.error('Failed to play sentence:', error);
-              setIsPlaying(false);
-            }
-          });
-        }
       }
+
+      // New sentence (auto-advance, navigation, initial play, play after stop) -
+      // start fresh. startSession() aborts the previous session and clears isPaused.
+      const abortController = startSession();
+
+      // Sync ref IMMEDIATELY to prevent stale comparison on next effect run
+      sessionSentenceIdRef.current = sentence.id;
+
+      // Update playback position for cache eviction protection and ASR
+      service.setCurrentPlayingIndex(currentSentenceIndex, currentChapter.sentences);
+
+      // Always use playSentenceStreaming for sentence-by-sentence playback
+      // It handles both cached (instant via HTMLAudioElement) and uncached (streaming worklet)
+      service.playSentenceStreaming(sentence, abortController.signal, audioPlaybackRate).catch(error => {
+        if (error.name !== 'AbortError') {
+          console.error('Failed to play sentence:', error);
+          setIsPlaying(false);
+        }
+      });
 
       // Preload entire chapter from current position
       service.preloadFullChapter(currentChapter.sentences, currentSentenceIndex + 1);
@@ -381,6 +439,8 @@ export function useAudioPlayback() {
 
     // Cancel current operations when speech rate changes
     endSession();
+    // Cached audio is discarded, so the current sentence is no longer resumable
+    sessionSentenceIdRef.current = null;
     service.setSpeechRate(speechRate);
 
     // Clear sentence states since audio needs regeneration
@@ -416,6 +476,7 @@ export function useAudioPlayback() {
 
     // Cancel current operations when voice changes
     endSession();
+    sessionSentenceIdRef.current = null;
 
     const voicePath = getInflectVoice(currentVoice).modelPath;
     service.setVoiceStyle(voicePath).catch(error => {
@@ -427,27 +488,6 @@ export function useAudioPlayback() {
     clearASRCompleted();
   }, [currentVoice, endSession, clearSentenceStates, clearASRCompleted]);
 
-  // Handle chapter changes - cancel operations and reset state
-  useEffect(() => {
-    const service = serviceRef.current;
-
-    // Cancel existing operations
-    endSession();
-
-    // Clear highlights and states
-    clearHighlight();
-    clearAudioPosition();
-    clearSentenceStates();
-    clearASRCompleted();
-
-    if (!service || !currentBook) return;
-
-    const chapter = currentBook.chapters[currentChapterIndex];
-    if (chapter) {
-      // Preload entire chapter
-      service.preloadFullChapter(chapter.sentences, 0);
-    }
-  }, [currentChapterIndex, currentBook, clearSentenceStates, clearASRCompleted, endSession]);
 
   /**
    * Play/pause toggle - OPTIMISTIC: updates state immediately
@@ -463,6 +503,7 @@ export function useAudioPlayback() {
    */
   const cancelAllOperations = useCallback(() => {
     endSession();
+    sessionSentenceIdRef.current = null;
     serviceRef.current?.cancelAllOperations();
     setIsPlaying(false);
   }, [endSession, setIsPlaying]);
@@ -494,10 +535,14 @@ export function useAudioPlayback() {
       }
     }
 
-    // Update highlight and ensure playing
+    // Update highlight and ensure playing. Clear the session sentence so the play
+    // effect starts this sentence fresh even if it is the one currently paused
+    // (with isPaused=false and a matching ref it would otherwise do nothing).
+    sessionSentenceIdRef.current = null;
     setHighlight(sentence.id, null);
     setPaused(false);
     setIsPlaying(true);
+
 
     // Play effect will handle actual playback
   }, [setIsPlaying, setSentenceIndex, setPaused]);

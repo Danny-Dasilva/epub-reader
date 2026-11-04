@@ -447,6 +447,17 @@ export default function ReaderPage() {
     audioPlayPause();
   }, [isPlaying, currentChapter, currentSentenceIndex, setHighlight, audioPlayPause]);
 
+  // Explicit play / pause for the Media Session (lock screen): unlike the toggle,
+  // "pause" while already paused must not start playback (and vice versa).
+  // Read the store at call time — the handlers can fire while the page is hidden.
+  const handlePlay = useCallback(() => {
+    if (!usePlaybackStore.getState().isPlaying) handlePlayPause();
+  }, [handlePlayPause]);
+
+  const handlePause = useCallback(() => {
+    if (usePlaybackStore.getState().isPlaying) handlePlayPause();
+  }, [handlePlayPause]);
+
   // Direct references - no wrapper needed since these are already stable
   const handlePrevSentence = prevSentence;
   const handleNextSentence = nextSentence;
@@ -537,8 +548,9 @@ export default function ReaderPage() {
 
   // Media Session for lock screen controls (when background playback enabled)
   useMediaSession({
-    onPlay: handlePlayPause,
-    onPause: handlePlayPause,
+    onPlay: handlePlay,
+    onPause: handlePause,
+
     onNextSentence: handleNextSentence,
     onPrevSentence: handlePrevSentence,
     onSeekForward: handleSkipForward,

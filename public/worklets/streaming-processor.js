@@ -55,7 +55,7 @@ class StreamingProcessor extends AudioWorkletProcessor {
         // even when they never reach the normal 500 ms buffering threshold.
         if (!this.isStarted && this.writePos > this.readPos) {
           this.isStarted = true;
-          this.port.postMessage({ type: 'started' });
+          this.port.postMessage({ type: 'started', generation: this.generation });
         }
       } else if (e.data.type === 'reset') {
         // FIX #4: Store new generation from reset message
@@ -111,7 +111,7 @@ class StreamingProcessor extends AudioWorkletProcessor {
     // Auto-start playback when threshold is reached
     if (!this.isStarted && (this.writePos - this.readPos) >= this.startThreshold) {
       this.isStarted = true;
-      this.port.postMessage({ type: 'started' });
+      this.port.postMessage({ type: 'started', generation: this.generation });
     }
   }
 
@@ -188,7 +188,8 @@ class StreamingProcessor extends AudioWorkletProcessor {
       this.hasEnded = true;
       this.port.postMessage({
         type: 'ended',
-        samplesConsumed: this.samplesConsumed
+        samplesConsumed: this.samplesConsumed,
+        generation: this.generation
       });
     } else if (!this.hasEnded) {
       // Performance optimization #1: Throttle progress to 30Hz
@@ -202,7 +203,8 @@ class StreamingProcessor extends AudioWorkletProcessor {
           progress,
           readPos: intReadPos,
           writePos: this.writePos,
-          samplesConsumed: this.samplesConsumed
+          samplesConsumed: this.samplesConsumed,
+          generation: this.generation
         });
       }
     }
