@@ -37,7 +37,6 @@ export function useBookSearch({
 }: UseBookSearchOptions): UseBookSearchReturn {
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
-  const [isSearching, setIsSearching] = useState(false);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Debounce the query
@@ -47,15 +46,11 @@ export function useBookSearch({
     }
 
     if (query.length < 2) {
-      setDebouncedQuery('');
-      setIsSearching(false);
       return;
     }
 
-    setIsSearching(true);
     debounceTimerRef.current = setTimeout(() => {
       setDebouncedQuery(query);
-      setIsSearching(false);
     }, debounceMs);
 
     return () => {
@@ -67,7 +62,7 @@ export function useBookSearch({
 
   // Perform search and compute total match count in a single memo pass (js-combine-iterations)
   const { results, totalMatches } = useMemo(() => {
-    if (!book || !debouncedQuery) {
+    if (!book || query.length < 2 || !debouncedQuery) {
       return { results: [] as SearchResult[], totalMatches: 0 };
     }
     const found = searchBook(book, debouncedQuery, pagination, maxResults);
@@ -76,10 +71,14 @@ export function useBookSearch({
       ? found.length
       : countMatches(book, debouncedQuery);
     return { results: found, totalMatches: total };
-  }, [book, debouncedQuery, pagination, maxResults]);
+  }, [book, query.length, debouncedQuery, pagination, maxResults]);
 
   // Clear search
   const clearSearch = useCallback(() => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
     setQuery('');
     setDebouncedQuery('');
   }, []);
@@ -89,7 +88,7 @@ export function useBookSearch({
     setQuery,
     results,
     totalMatches,
-    isSearching,
+    isSearching: query.length >= 2 && query !== debouncedQuery,
     clearSearch
   };
 }

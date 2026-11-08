@@ -2,12 +2,17 @@
  * Service Worker registration utilities for PWA support
  */
 
+let registrationStarted = false;
+
 export function registerServiceWorker(): void {
   if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
     return;
   }
 
-  window.addEventListener('load', async () => {
+  if (registrationStarted) return;
+  registrationStarted = true;
+
+  const register = async () => {
     try {
       const registration = await navigator.serviceWorker.register('/sw.js', {
         scope: '/',
@@ -31,9 +36,16 @@ export function registerServiceWorker(): void {
         });
       });
     } catch (error) {
+      registrationStarted = false;
       console.error('Service Worker registration failed:', error);
     }
-  });
+  };
+
+  if (document.readyState === 'complete') {
+    void register();
+  } else {
+    window.addEventListener('load', register, { once: true });
+  }
 }
 
 export function unregisterServiceWorker(): Promise<boolean> {
@@ -52,7 +64,12 @@ export function canInstallPWA(): boolean {
 }
 
 // Store the install prompt for later use
-let deferredPrompt: any = null;
+type InstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
+};
+
+let deferredPrompt: InstallPromptEvent | null = null;
 
 export function setupInstallPrompt(
   onCanInstall: () => void,
@@ -64,7 +81,7 @@ export function setupInstallPrompt(
 
   const handleBeforeInstall = (e: Event) => {
     e.preventDefault();
-    deferredPrompt = e;
+    deferredPrompt = e as InstallPromptEvent;
     onCanInstall();
   };
 

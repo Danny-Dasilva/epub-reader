@@ -122,6 +122,7 @@ export class AudioPlayer {
     if (this.gainNode) {
       this.gainNode.gain.value = this.volume;
     }
+    this.streamingWorklet?.setVolume(this.volume);
   }
 
   setPlaybackRate(rate: number): void {
@@ -409,6 +410,9 @@ export class AudioPlayer {
   }
 
   pause(): void {
+    // Invalidate a pending HTMLMediaElement.play() or resume() completion.
+    // Otherwise its promise can resolve after pause and restart tracking.
+    this.playbackGeneration++;
     // Authoritative pause: do NOT gate on this.isPlaying. During a dual-player
     // hand-off, the finishing element's stale onended can reset this.isPlaying to
     // false while the NEW active element is still audible — gating made pause a
@@ -813,12 +817,6 @@ export class AudioPlayer {
    * @param explicitPlaybackRate - Optional explicit playback rate (avoids race with async React effects)
    */
   async startStreamingPlayback(sentence: SentenceAudio, explicitPlaybackRate?: number): Promise<StreamingAudioWorklet> {
-    await this.ensureAudioContext();
-
-    // Capture user pause intent from store BEFORE any state changes
-    // This allows switching sentences while paused without auto-playing
-    const wasPaused = usePlaybackStore.getState().session.isPaused;
-
     // Increment session ID BEFORE stopInternal to invalidate any pending callbacks
     // This guards against race conditions where stale 'ended' messages arrive after
     // a new sentence has started. Must happen BEFORE stop so old callbacks see old ID.
@@ -826,6 +824,11 @@ export class AudioPlayer {
 
     // Stop any existing playback (old callbacks will now see stale session ID)
     this.stopInternal();
+    const generation = this.playbackGeneration;
+    await this.ensureAudioContext();
+    if (generation !== this.playbackGeneration) {
+      throw new DOMException('Playback superseded', 'AbortError');
+    }
 
     // Streaming mode is in effect from HERE, not from the worklet's 'started'
     // (~500ms later). In between, pause()/resume() must route to the worklet:
@@ -842,9 +845,16 @@ export class AudioPlayer {
 
     // Create or reuse streaming worklet
     if (!this.streamingWorklet) {
-      this.streamingWorklet = new StreamingAudioWorklet();
+      // Do not publish a partially initialized worklet: a stop or another
+      // start can occur while addModule() is pending.
+      const worklet = new StreamingAudioWorklet();
       // Pass playbackRate via processorOptions for synchronous init (no race)
-      await this.streamingWorklet.initialize(this.audioContext!, rateToUse, sentence.sampleRate);
+      await worklet.initialize(this.audioContext!, rateToUse, sentence.sampleRate);
+      if (generation !== this.playbackGeneration) {
+        worklet.dispose();
+        throw new DOMException('Playback superseded', 'AbortError');
+      }
+      this.streamingWorklet = worklet;
     } else {
       // Reset with playback rate atomically to prevent chipmunk audio
       this.streamingWorklet.resetWithPlaybackRate(rateToUse, sentence.sampleRate);
@@ -859,7 +869,7 @@ export class AudioPlayer {
 
     // If user was paused, immediately pause the worklet
     // Audio will buffer but not play until user resumes
-    if (wasPaused && this.streamingWorklet) {
+    if (usePlaybackStore.getState().session.isPaused && this.streamingWorklet) {
       this.streamingWorklet.pause();
     }
 

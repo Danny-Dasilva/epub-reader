@@ -32,8 +32,12 @@ export class EpubParser {
    */
   async parse(file: File | ArrayBuffer): Promise<ParsedBook> {
     // Load the EPUB
-    this.book = ePub(file as ArrayBuffer);
-    await this.book.ready;
+    const data = file instanceof ArrayBuffer ? file : await file.arrayBuffer();
+    this.book = ePub();
+    // The constructor's automatic open emits openFailed but leaves `ready`
+    // pending on malformed archives. Await open directly so errors settle the
+    // import, while also observing readiness failures during unpacking.
+    await Promise.all([this.book.open(data), this.book.ready]);
 
     // Load metadata, spine, and navigation in parallel (independent resources)
     const [metadata, spine, navigation] = await Promise.all([

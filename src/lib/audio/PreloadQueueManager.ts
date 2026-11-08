@@ -567,6 +567,7 @@ export class PreloadQueueManager {
    * Process a batch of sentences in a single TTS call
    */
   private async processBatchedRequest(batch: BatchedRequest): Promise<void> {
+    const session = this.sessionController;
     try {
       if (batch.abortController.signal.aborted) return;
 
@@ -616,9 +617,22 @@ export class PreloadQueueManager {
         if (this.activeRequests.get(id) === req) {
           this.activeRequests.delete(id);
         }
-        if (aborted) {
-          this.markPendingIfCancelled(id);
+      }
+      // Prioritizing a single sentence aborts its shared synthesis batch. Put
+      // the other sentences back into the same live session instead of silently
+      // dropping them from full-chapter preloading. A session replacement or
+      // explicit cancellation must never resurrect the old work.
+      if (aborted && session && this.sessionController === session && !session.signal.aborted) {
+        for (const req of batch.requests) {
+          const id = req.sentence.id;
+          if (req.abortController.signal.aborted || this.cache.has(id) || this.isInFlight(id)) continue;
+          this.queue.push({ ...req, abortController: new AbortController() });
+          this.queuedIds.add(id);
+          this.emitState(id, 'queued');
         }
+      }
+      if (aborted) {
+        for (const req of batch.requests) this.markPendingIfCancelled(req.sentence.id);
       }
       this.processQueue();
     }
@@ -1521,7 +1535,10 @@ export class PreloadQueueManager {
       const result = await parakeet.transcribe(audio16k, 16000);
 
       // Upgrade timestamps in cache
-      if (result.words.length > 0) {
+      // A seek, voice change, or cache eviction may have replaced this audio
+      // while transcription was running. Its timestamps belong only to the
+      // exact audio object that was transcribed.
+      if (!this.disposed && this.config.enableASR && this.cache.get(sentenceId) === audio && result.words.length > 0) {
         this.upgradeTimestamps(sentenceId, result.words);
         console.log(`[ASR] Upgraded timestamps for sentence ${sentenceId} (${result.words.length} words)`);
       }
@@ -1564,7 +1581,7 @@ export class PreloadQueueManager {
    */
   private async ensureParakeetReady(): Promise<ParakeetASR> {
     // If already initialized and no pending promise, return immediately
-    if (this.parakeet && !this.parakeetInitPromise) {
+    if (this.parakeet?.isReady() && !this.parakeetInitPromise) {
       return this.parakeet;
     }
 
@@ -1574,23 +1591,27 @@ export class PreloadQueueManager {
     }
 
     // Start initialization and track the promise
-    this.parakeetInitPromise = (async () => {
+    const initialization = (async () => {
       // Request persistent storage for better caching of large model files
       await this.requestPersistentStorage();
+
+      if (this.disposed) throw abortError();
 
       this.parakeet = getSharedParakeetASR();
       console.log('[ASR] Initializing Parakeet...');
       await this.parakeet.initialize();
+      if (this.disposed) throw abortError();
       console.log('[ASR] Parakeet ready');
       return this.parakeet;
     })();
+    this.parakeetInitPromise = initialization;
 
     try {
-      const result = await this.parakeetInitPromise;
+      const result = await initialization;
       return result;
     } finally {
       // Clear promise after completion (success or failure)
-      this.parakeetInitPromise = null;
+      if (this.parakeetInitPromise === initialization) this.parakeetInitPromise = null;
     }
   }
 
@@ -1624,7 +1645,9 @@ export class PreloadQueueManager {
 
     // Defer callback to idle time to prevent blocking the audio playback RAF loop
     const notifyCallback = () => {
-      this.asrCompleteCallback?.(sentenceId, timestamps);
+      if (!this.disposed && this.config.enableASR && this.cache.get(sentenceId) === audio) {
+        this.asrCompleteCallback?.(sentenceId, timestamps);
+      }
     };
 
     if (typeof requestIdleCallback === 'function') {

@@ -18,8 +18,7 @@ export class BookStorage {
    */
   async saveBook(book: ParsedBook): Promise<void> {
     if (!supportsNativeCompression()) {
-      console.warn('Native compression not supported, falling back to sessionStorage');
-      return;
+      throw new Error('This browser does not support compressed book storage');
     }
 
     const db = await getDB();

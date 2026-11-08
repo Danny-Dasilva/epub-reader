@@ -35,7 +35,7 @@ export const useNavigationStore = create<NavigationState & NavigationActions>()(
 
     setChapter: (index) => {
       const { currentBook } = get();
-      if (!currentBook || index < 0 || index >= currentBook.chapters.length) return;
+      if (!currentBook || !Number.isInteger(index) || index < 0 || index >= currentBook.chapters.length) return;
       set({
         currentChapterIndex: index,
         currentSentenceIndex: 0
@@ -44,7 +44,7 @@ export const useNavigationStore = create<NavigationState & NavigationActions>()(
 
     setSentenceIndex: (index) => {
       const chapter = get().getCurrentChapter();
-      if (!chapter || index < 0 || index >= chapter.sentences.length) return;
+      if (!chapter || !Number.isInteger(index) || index < 0 || index >= chapter.sentences.length) return;
       set({ currentSentenceIndex: index });
     },
 
@@ -61,9 +61,12 @@ export const useNavigationStore = create<NavigationState & NavigationActions>()(
       }
 
       // Try next chapter
-      if (currentChapterIndex < currentBook.chapters.length - 1) {
+      const nextChapterIndex = currentBook.chapters.findIndex(
+        (nextChapter, index) => index > currentChapterIndex && nextChapter.sentences.length > 0
+      );
+      if (nextChapterIndex !== -1) {
         set({
-          currentChapterIndex: currentChapterIndex + 1,
+          currentChapterIndex: nextChapterIndex,
           currentSentenceIndex: 0
         });
         return true;
@@ -82,10 +85,11 @@ export const useNavigationStore = create<NavigationState & NavigationActions>()(
       }
 
       // Try previous chapter
-      if (currentChapterIndex > 0) {
-        const prevChapter = currentBook.chapters[currentChapterIndex - 1];
+      for (let index = currentChapterIndex - 1; index >= 0; index--) {
+        const prevChapter = currentBook.chapters[index];
+        if (prevChapter.sentences.length === 0) continue;
         set({
-          currentChapterIndex: currentChapterIndex - 1,
+          currentChapterIndex: index,
           currentSentenceIndex: prevChapter.sentences.length - 1
         });
         return true;

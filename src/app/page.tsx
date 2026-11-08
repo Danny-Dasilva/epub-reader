@@ -6,6 +6,7 @@ import { parseEpub } from '@/lib/epub';
 import { useLibraryStore, StoredBook } from '@/store/libraryStore';
 import { usePlaybackStore } from '@/store/playbackStore';
 import { migrateFromSessionStorage } from '@/lib/storage/migration';
+import { supportsNativeCompression } from '@/lib/storage/compression';
 import { useLastReadBook } from '@/hooks/useLastReadBook';
 import dynamic from 'next/dynamic';
 
@@ -53,6 +54,7 @@ interface ParseError {
 export default function LibraryPage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const importInProgress = useRef(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isLibraryLoading, setIsLibraryLoading] = useState(true); // Fix #7: Loading state for IndexedDB
@@ -89,7 +91,8 @@ export default function LibraryPage() {
   }, [enableIndexedDBStorage, loadBooksFromDB]);
 
   const handleFileSelect = useCallback(async (file: File) => {
-    if (!file.name.endsWith('.epub')) {
+    if (importInProgress.current) return;
+    if (!file.name.toLowerCase().endsWith('.epub')) {
       setError({
         message: 'Invalid file type',
         details: 'Please select a valid EPUB file (.epub extension)',
@@ -98,20 +101,20 @@ export default function LibraryPage() {
       return;
     }
 
+    importInProgress.current = true;
     setIsLoading(true);
     setError(null);
 
     try {
       const arrayBuffer = await file.arrayBuffer();
       const parsedBook = await parseEpub(arrayBuffer);
-      addBook(parsedBook);
-
       // Save to IndexedDB if enabled, otherwise use sessionStorage
-      if (enableIndexedDBStorage) {
+      if (enableIndexedDBStorage && supportsNativeCompression()) {
         await addBookToDB(parsedBook);
       } else {
         // Fallback to sessionStorage
         sessionStorage.setItem(`book-${parsedBook.id}`, JSON.stringify(parsedBook));
+        addBook(parsedBook);
       }
 
       // Navigate to reader
@@ -125,6 +128,7 @@ export default function LibraryPage() {
         canRetry: true
       });
     } finally {
+      importInProgress.current = false;
       setIsLoading(false);
     }
   }, [addBook, addBookToDB, enableIndexedDBStorage, router]);
@@ -149,6 +153,8 @@ export default function LibraryPage() {
 
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    // Selecting the same file after a failed attempt must fire change again.
+    e.target.value = '';
     if (file) handleFileSelect(file);
   }, [handleFileSelect]);
 
@@ -166,10 +172,9 @@ export default function LibraryPage() {
         const { getBookStorage } = await import('@/lib/storage/bookStorage');
         const storage = getBookStorage();
         await storage.deleteBook(bookId);
-      } else {
-        // Fallback to sessionStorage
-        sessionStorage.removeItem(`book-${bookId}`);
       }
+      // Also remove a fallback or migration backup, if one exists.
+      sessionStorage.removeItem(`book-${bookId}`);
     }
   };
 

@@ -149,6 +149,13 @@ class StreamingProcessor extends AudioWorkletProcessor {
       return true;
     }
 
+    // A completed empty stream has no threshold to cross. Finish it so the
+    // caller can advance instead of waiting forever for a started event.
+    if (this.isComplete && !this.isStarted && !this.isPaused && !this.hasEnded) {
+      this.hasEnded = true;
+      this.port.postMessage({ type: 'ended', samplesConsumed: 0, generation: this.generation });
+    }
+
     // Fill with silence until playback starts or when paused
     if (!this.isStarted || this.isPaused) {
       output.fill(0);

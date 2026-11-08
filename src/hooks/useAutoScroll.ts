@@ -7,6 +7,7 @@ interface UseAutoScrollOptions {
   currentSentenceIndex: number | null;
   isPlaying: boolean;
   containerRef?: React.RefObject<HTMLElement | null>;
+  enabled?: boolean;
 }
 
 // Window (ms) after a programmatic scrollIntoView during which scroll events
@@ -26,7 +27,8 @@ const AUTO_SCROLL_GUARD_MS = 800;
 export function useAutoScroll({
   currentSentenceIndex,
   isPlaying,
-  containerRef
+  containerRef,
+  enabled = true
 }: UseAutoScrollOptions) {
   const autoScroll = useUIStore((state) => state.autoScroll);
   const scrollPosition = useUIStore((state) => state.scrollPosition);
@@ -62,6 +64,7 @@ export function useAutoScroll({
 
   // Handle manual scroll detection - registered once, reads from refs
   useEffect(() => {
+    if (!enabled) return;
     const container = containerRef?.current || window;
 
     const handleScroll = () => {
@@ -82,7 +85,7 @@ export function useAutoScroll({
     return () => {
       container.removeEventListener('scroll', handleScroll);
     };
-  }, [containerRef]);  // Only re-register when container changes
+  }, [containerRef, enabled]);
 
   // Re-enable auto-scroll when playback resumes from pause
   useEffect(() => {

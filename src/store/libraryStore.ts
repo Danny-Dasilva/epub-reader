@@ -124,6 +124,7 @@ export const useLibraryStore = create<LibraryState>()(
           }));
         } catch (err) {
           console.error('Failed to save book to IndexedDB:', err);
+          throw err;
         }
       }
     }),

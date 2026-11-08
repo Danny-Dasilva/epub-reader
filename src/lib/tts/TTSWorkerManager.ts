@@ -173,10 +173,12 @@ export class TTSWorkerManager {
         // creating a new closure on every message event
         const workerIdx = i;
         worker.onmessage = (event: MessageEvent<WorkerOutMessage>) => {
+          if (this.workers[workerIdx] !== worker) return;
           this.handleWorkerMessage(event.data, workerIdx);
         };
 
         worker.onerror = (error) => {
+          if (this.workers[workerIdx] !== worker) return;
           console.error(`TTS Worker ${workerIdx} error:`, error);
           if (this.readyReject) {
             this.failInit(new Error(`Worker ${workerIdx} initialization failed`));
@@ -228,19 +230,29 @@ export class TTSWorkerManager {
   }
 
   /**
-   * A worker raised an uncaught error after the pool was ready. Fail the job it
-   * was running (if any) and free it so queued work isn't stuck behind it. Any
-   * late messages for the failed id are ignored.
+   * An uncaught worker error leaves its ability to process messages unknown.
+   * Tear down the pool and reject every operation, including duration and voice
+   * requests, so no caller waits forever and initialization can retry.
    */
   private handleWorkerFault(workerIndex: number, error: ErrorEvent): void {
-    const activeId = this.workerActive[workerIndex];
-    this.workerActive[workerIndex] = null;
-    if (activeId) {
-      this.takePending(activeId)?.reject(
-        new Error(`TTS worker ${workerIndex} error: ${error.message || 'unknown error'}`)
-      );
-    }
-    this.processNextInQueue();
+    const failure = new Error(`TTS worker ${workerIndex} error: ${error.message || 'unknown error'}`);
+    const pending = Array.from(this.pendingRequests.values());
+    const durations = Array.from(this.pendingDurationRequests.values());
+    this.pendingRequests.clear();
+    this.pendingDurationRequests.clear();
+    this.requestQueue = [];
+    for (const worker of this.workers) worker?.terminate();
+    this.workers = [];
+    this.workerActive = [];
+    this.workerReady = [];
+    this.isReady = false;
+    this.backend = null;
+    this.readyPromise = null;
+    const voiceChange = this.voiceChange;
+    this.voiceChange = null;
+    for (const request of pending) request.reject(failure);
+    for (const request of durations) request.reject(failure);
+    voiceChange?.reject(failure);
   }
 
   /**

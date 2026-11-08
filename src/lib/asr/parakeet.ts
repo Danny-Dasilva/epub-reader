@@ -4,7 +4,7 @@
  */
 
 import { ASRConfig, ASRProgressCallback, TranscriptionResult, WordTimestamp } from './types';
-import type { ParakeetModel, getParakeetModel as GetParakeetModelFn, ModelInfo } from 'parakeet.js';
+import type { ParakeetModel, getParakeetModel as GetParakeetModelFn } from 'parakeet.js';
 
 // Dynamic import types
 interface ParakeetModule {
@@ -23,9 +23,10 @@ async function getParakeetModule(): Promise<ParakeetModule> {
 }
 
 export class ParakeetASR {
-  private model: any = null;
+  private model: ParakeetModel | null = null;
   private config: ASRConfig;
-  private isLoading = false;
+  private loadingPromise: Promise<void> | null = null;
+  private generation = 0;
 
   constructor(config: Partial<ASRConfig> = {}) {
     this.config = {
@@ -39,53 +40,59 @@ export class ParakeetASR {
 
   async initialize(progressCallback?: ASRProgressCallback): Promise<void> {
     if (this.model) return;
-    if (this.isLoading) {
-      // Wait for existing load to complete
-      while (this.isLoading) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-      return;
-    }
+    if (this.loadingPromise) return this.loadingPromise;
 
-    this.isLoading = true;
+    const generation = this.generation;
+    const loading = this.loadModel(generation, progressCallback);
+    this.loadingPromise = loading;
+    try {
+      await loading;
+    } finally {
+      if (this.loadingPromise === loading) this.loadingPromise = null;
+    }
+  }
+
+  private async loadModel(generation: number, progressCallback?: ASRProgressCallback): Promise<void> {
     progressCallback?.(0, 'Loading ASR module...');
 
-    try {
-      const { getParakeetModel, ParakeetModel } = await getParakeetModule();
+    const { getParakeetModel, ParakeetModel } = await getParakeetModule();
 
-      progressCallback?.(10, 'Fetching model info...');
+    progressCallback?.(10, 'Fetching model info...');
 
-      // Check WebGPU availability
-      let backend = this.config.backend;
-      if (backend === 'webgpu') {
-        const hasWebGPU = typeof navigator !== 'undefined' && 'gpu' in navigator;
-        if (!hasWebGPU) {
-          console.warn('WebGPU not available, falling back to WASM');
-          backend = 'wasm';
-        }
+    // Check WebGPU availability
+    let backend = this.config.backend;
+    if (backend === 'webgpu') {
+      const hasWebGPU = typeof navigator !== 'undefined' && 'gpu' in navigator;
+      if (!hasWebGPU) {
+        console.warn('WebGPU not available, falling back to WASM');
+        backend = 'wasm';
       }
-
-      // Get model URLs from Hugging Face
-      const modelInfo = await getParakeetModel('istupakov/parakeet-tdt-0.6b-v2-onnx', {
-        backend,
-        encoderQuant: this.config.encoderQuant,
-        decoderQuant: this.config.decoderQuant
-      });
-
-      progressCallback?.(30, 'Downloading ASR models...');
-
-      // Load the model
-      this.model = await ParakeetModel.fromUrls({
-        ...modelInfo.urls,
-        filenames: modelInfo.filenames,
-        backend,
-        cpuThreads: this.config.cpuThreads
-      });
-
-      progressCallback?.(100, 'ASR ready');
-    } finally {
-      this.isLoading = false;
     }
+
+    // Get model URLs from Hugging Face
+    const modelInfo = await getParakeetModel('istupakov/parakeet-tdt-0.6b-v2-onnx', {
+      backend,
+      encoderQuant: this.config.encoderQuant,
+      decoderQuant: this.config.decoderQuant
+    });
+
+    progressCallback?.(30, 'Downloading ASR models...');
+
+    // Load the model
+    const model = await ParakeetModel.fromUrls({
+      ...modelInfo.urls,
+      filenames: modelInfo.filenames,
+      backend,
+      cpuThreads: this.config.cpuThreads
+    });
+
+    if (generation !== this.generation) {
+      model.dispose?.();
+      throw new DOMException('ASR initialization cancelled', 'AbortError');
+    }
+    this.model = model;
+
+    progressCallback?.(100, 'ASR ready');
   }
 
   async transcribe(
@@ -107,7 +114,7 @@ export class ParakeetASR {
       returnConfidences: true
     });
 
-    const words: WordTimestamp[] = (result.words || []).map((w: any) => ({
+    const words: WordTimestamp[] = (result.words || []).map((w) => ({
       text: w.text,
       start: w.start,
       end: w.end,
@@ -145,6 +152,8 @@ export class ParakeetASR {
   }
 
   dispose(): void {
+    this.generation++;
+    this.loadingPromise = null;
     if (this.model && typeof this.model.dispose === 'function') {
       this.model.dispose();
     }

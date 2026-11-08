@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { usePlaybackStore } from '@/store/playbackStore';
 
 /**
@@ -11,29 +11,26 @@ import { usePlaybackStore } from '@/store/playbackStore';
  * and audio continues playing in the background.
  */
 export function useVisibilityPause() {
-  const isPlaying = usePlaybackStore(state => state.isPlaying);
   const setIsPlaying = usePlaybackStore(state => state.setIsPlaying);
-  const wasPlayingBeforeHide = useRef(false);
-  // Track if we caused the pause via visibility change
-  const pausedByVisibility = useRef(false);
-
-  // Fix #2: Reset wasPlayingBeforeHide when user manually pauses while tab is hidden
-  // This prevents incorrect auto-resume when tab becomes visible
-  useEffect(() => {
-    // If playback stopped and it wasn't caused by visibility change,
-    // then the user manually paused - reset the flag
-    if (!isPlaying && !pausedByVisibility.current) {
-      wasPlayingBeforeHide.current = false;
-    }
-    // Reset the visibility pause flag after checking
-    pausedByVisibility.current = false;
-  }, [isPlaying]);
 
   useEffect(() => {
+    let resumeOnVisible = false;
+    let changingVisibilityPlayback = false;
+    const unsubscribe = usePlaybackStore.subscribe((state, previous) => {
+      // Any subsequent playback change supersedes the automatic pause, even if
+      // React batches both changes before an effect can observe them.
+      if (!changingVisibilityPlayback && state.isPlaying !== previous.isPlaying) {
+        resumeOnVisible = false;
+      }
+      if (state.allowBackgroundPlayback && !previous.allowBackgroundPlayback) {
+        resumeOnVisible = false;
+      }
+    });
     const handleVisibilityChange = () => {
       // Read at event time to avoid re-registering listener on setting change
       const { allowBackgroundPlayback } = usePlaybackStore.getState();
       if (allowBackgroundPlayback) {
+        resumeOnVisible = false;
         return;
       }
 
@@ -42,20 +39,24 @@ export function useVisibilityPause() {
         // Use getState() to get current value, not stale closure value
         const currentlyPlaying = usePlaybackStore.getState().isPlaying;
         if (currentlyPlaying) {
-          wasPlayingBeforeHide.current = true;
-          pausedByVisibility.current = true;
+          resumeOnVisible = true;
+          changingVisibilityPlayback = true;
           setIsPlaying(false);
+          changingVisibilityPlayback = false;
         }
       } else {
         // Tab visible - resume if was playing before
-        if (wasPlayingBeforeHide.current) {
-          wasPlayingBeforeHide.current = false;
+        if (resumeOnVisible) {
+          resumeOnVisible = false;
           setIsPlaying(true);
         }
       }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      unsubscribe();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, [setIsPlaying]);
 }

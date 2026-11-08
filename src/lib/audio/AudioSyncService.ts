@@ -42,6 +42,7 @@ export class AudioSyncService {
   private player: AudioPlayer;
   private config: AudioSyncConfig;
   private isInitialized = false;
+  private disposed = false;
   // Shared in-flight initialization: concurrent callers await the same attempt
   private initPromise: Promise<void> | null = null;
   private eventHandlers: Set<PlaybackEventHandler> = new Set();
@@ -254,6 +255,8 @@ export class AudioSyncService {
       // Initialize streaming worklet with sentence data for word tracking
       // Pass explicit playback rate to avoid race with async React effects
       const worklet = await this.player.startStreamingPlayback(sentenceAudio, explicitPlaybackRate);
+      throwIfAborted();
+      const workletGeneration = worklet.getGeneration();
 
       // Start streaming synthesis
       await this.ttsManager.synthesizeStreaming(
@@ -264,12 +267,15 @@ export class AudioSyncService {
           chunkDurationMs: 500,  // 500ms chunks for ~500ms time-to-first-audio
           preprocessedText: sentence.preprocessedText,
           onChunk: (audio: Float32Array, chunkIndex: number, isLast: boolean) => {
+            // The player may have reset this shared worklet for another sentence
+            // while this synthesis was settling. Never feed it stale chunks.
+            if (signal?.aborted || !worklet.isCurrentGeneration(workletGeneration)) return;
             // Append chunk to worklet for immediate playback
-            this.player.appendStreamingChunk(audio);
+            worklet.appendChunk(audio);
 
             // Mark complete when last chunk received
             if (isLast) {
-              this.player.finishStreaming();
+              worklet.markComplete();
             }
           }
         },
@@ -714,6 +720,8 @@ export class AudioSyncService {
    * Dispose of resources
    */
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     this.cancelAllOperations();  // stops the player (stop/stopGapless)
     this.preloadManager.dispose();
     // Remove only THIS service's forwarder. Do NOT dispose the shared singleton

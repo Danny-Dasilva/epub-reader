@@ -193,7 +193,8 @@ export default function ReaderPage() {
   useAutoScroll({
     currentSentenceIndex: isPlaying ? currentSentenceIndex : null,
     isPlaying,
-    containerRef: mainRef
+    containerRef: mainRef,
+    enabled: !loading
   });
 
   // Calculate time estimates based on reading pace
@@ -206,106 +207,124 @@ export default function ReaderPage() {
 
   // Load book from IndexedDB or sessionStorage
   useEffect(() => {
+    let cancelled = false;
     const loadBook = async () => {
       setLoading(true);
 
-      let parsedBook: ParsedBook | null = null;
+      try {
+        let parsedBook: ParsedBook | null = null;
 
-      // Try IndexedDB first if enabled
-      if (enableIndexedDBStorage) {
-        const storage = getBookStorage();
-        parsedBook = await storage.loadBook(bookId);
+        // Try IndexedDB first if enabled
+        if (enableIndexedDBStorage) {
+          const storage = getBookStorage();
+          parsedBook = await storage.loadBook(bookId);
 
-        if (parsedBook) {
-          console.log('Loaded book from IndexedDB:', parsedBook.title);
+          if (parsedBook) {
+            console.log('Loaded book from IndexedDB:', parsedBook.title);
+          } else {
+            // Fallback to sessionStorage for migration
+            const storedBook = sessionStorage.getItem(`book-${bookId}`);
+            if (storedBook) {
+              parsedBook = JSON.parse(storedBook) as ParsedBook;
+              console.log('Loaded book from sessionStorage, migrating to IndexedDB');
+              // Migrate to IndexedDB
+              try {
+                await storage.saveBook(parsedBook);
+              } catch (error) {
+                console.warn('Could not migrate book to IndexedDB:', error);
+              }
+              // Keep in sessionStorage as backup for now
+            }
+          }
         } else {
-          // Fallback to sessionStorage for migration
+          // Use sessionStorage if IndexedDB disabled
           const storedBook = sessionStorage.getItem(`book-${bookId}`);
           if (storedBook) {
             parsedBook = JSON.parse(storedBook) as ParsedBook;
-            console.log('Loaded book from sessionStorage, migrating to IndexedDB');
-            // Migrate to IndexedDB
-            await storage.saveBook(parsedBook);
-            // Keep in sessionStorage as backup for now
           }
         }
-      } else {
-        // Use sessionStorage if IndexedDB disabled
-        const storedBook = sessionStorage.getItem(`book-${bookId}`);
-        if (storedBook) {
-          parsedBook = JSON.parse(storedBook) as ParsedBook;
-        }
-      }
 
-      if (parsedBook) {
-        setBook(parsedBook);
-        setCurrentBook(parsedBook);
-        // Calculate pagination for page numbers
-        setPagination(calculatePagination(parsedBook));
+        if (cancelled) return;
+        if (parsedBook) {
+          setBook(parsedBook);
+          setCurrentBook(parsedBook);
+          // Calculate pagination for page numbers
+          setPagination(calculatePagination(parsedBook));
 
-        // Check for URL params first (for quick resume)
-        if (urlChapter !== null && urlSentence !== null) {
-          const chapterIndex = parseInt(urlChapter, 10);
-          const sentenceIndex = parseInt(urlSentence, 10);
+          // Check for URL params first (for quick resume)
+          if (urlChapter !== null && urlSentence !== null) {
+            const chapterIndex = parseInt(urlChapter, 10);
+            const sentenceIndex = parseInt(urlSentence, 10);
 
-          // Validate URL params are within bounds
-          if (
-            !isNaN(chapterIndex) &&
-            !isNaN(sentenceIndex) &&
-            chapterIndex >= 0 &&
-            chapterIndex < parsedBook.chapters.length
-          ) {
-            const chapter = parsedBook.chapters[chapterIndex];
-            if (sentenceIndex >= 0 && sentenceIndex < chapter.sentences.length) {
-              setChapter(chapterIndex);
-              setSentenceIndex(sentenceIndex);
+            // Validate URL params are within bounds
+            if (
+              !isNaN(chapterIndex) &&
+              !isNaN(sentenceIndex) &&
+              chapterIndex >= 0 &&
+              chapterIndex < parsedBook.chapters.length
+            ) {
+              const chapter = parsedBook.chapters[chapterIndex];
+              if (sentenceIndex >= 0 && sentenceIndex < chapter.sentences.length) {
+                setChapter(chapterIndex);
+                setSentenceIndex(sentenceIndex);
+              }
             }
-          }
-        } else {
-          // Restore saved reading position (if no URL params)
-          const savedProgress = getProgress(bookId);
-          if (savedProgress) {
-            // Validate saved position is within bounds
-            if (savedProgress.chapterIndex < parsedBook.chapters.length) {
-              setChapter(savedProgress.chapterIndex);
-              const chapter = parsedBook.chapters[savedProgress.chapterIndex];
-              if (savedProgress.sentenceIndex < chapter.sentences.length) {
-                setSentenceIndex(savedProgress.sentenceIndex);
+          } else {
+            // Restore saved reading position (if no URL params)
+            const savedProgress = getProgress(bookId);
+            if (savedProgress) {
+              // Validate saved position is within bounds
+              if (Number.isInteger(savedProgress.chapterIndex) && savedProgress.chapterIndex >= 0 && savedProgress.chapterIndex < parsedBook.chapters.length) {
+                setChapter(savedProgress.chapterIndex);
+                const chapter = parsedBook.chapters[savedProgress.chapterIndex];
+                if (savedProgress.sentenceIndex < chapter.sentences.length) {
+                  setSentenceIndex(savedProgress.sentenceIndex);
+                }
               }
             }
           }
-        }
 
-        updateLastRead(bookId);
-        setLoading(false);
-      } else {
-        // If not found anywhere, redirect to library
-        router.push('/');
+          updateLastRead(bookId);
+          setLoading(false);
+        } else {
+          // If not found anywhere, redirect to library
+          router.push('/');
+        }
+      } catch (error) {
+        console.error('Failed to load book:', error);
+        if (!cancelled) router.push('/');
       }
     };
 
-    loadBook();
+    void loadBook();
+    return () => { cancelled = true; };
   }, [bookId, router, enableIndexedDBStorage, setCurrentBook, setChapter, setSentenceIndex, getProgress, updateLastRead, urlChapter, urlSentence]);
 
   // Save reading progress when position changes
   useEffect(() => {
-    if (book && currentChapterIndex >= 0 && currentSentenceIndex >= 0) {
+    if (!loading && book?.id === bookId && currentChapterIndex >= 0 && currentSentenceIndex >= 0) {
       saveProgress(bookId, currentChapterIndex, currentSentenceIndex);
     }
-  }, [bookId, book, currentChapterIndex, currentSentenceIndex, saveProgress]);
+  }, [bookId, book, loading, currentChapterIndex, currentSentenceIndex, saveProgress]);
 
   // Handle autoplay from URL param (for quick resume)
+  const autoplayedBookRef = useRef<string | null>(null);
   useEffect(() => {
+    if (urlAutoplay === 'true' && isPlaying && book?.id === bookId) {
+      autoplayedBookRef.current = bookId;
+    }
     if (
       !loading &&
-      book &&
+      book?.id === bookId &&
       urlAutoplay === 'true' &&
+      autoplayedBookRef.current !== bookId &&
       !isPlaying &&
       isServiceReady &&
       ttsReady
     ) {
       // Start playback automatically after a short delay to ensure everything is initialized
       const timer = setTimeout(() => {
+        autoplayedBookRef.current = bookId;
         const chapter = book.chapters[currentChapterIndex];
         if (chapter) {
           const sentence = chapter.sentences[currentSentenceIndex];
@@ -318,12 +337,12 @@ export default function ReaderPage() {
 
       return () => clearTimeout(timer);
     }
-  }, [loading, book, urlAutoplay, isPlaying, isServiceReady, ttsReady, currentChapterIndex, currentSentenceIndex, audioPlayPause]);
+  }, [loading, book, bookId, urlAutoplay, isPlaying, isServiceReady, ttsReady, currentChapterIndex, currentSentenceIndex, audioPlayPause]);
 
   // Scroll to and highlight restored position on initial load
-  const hasScrolledToPosition = useRef(false);
+  const scrolledBookRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!loading && book && !hasScrolledToPosition.current && currentSentenceIndex > 0) {
+    if (!loading && book?.id === bookId && scrolledBookRef.current !== bookId && currentSentenceIndex > 0) {
       const chapter = book.chapters[currentChapterIndex];
       if (chapter) {
         const sentence = chapter.sentences[currentSentenceIndex];
@@ -334,15 +353,12 @@ export default function ReaderPage() {
       }
       // Small delay to ensure DOM is ready
       const timer = setTimeout(() => {
-        const element = document.getElementById(`sentence-${currentSentenceIndex}`);
-        if (element) {
-          element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-        hasScrolledToPosition.current = true;
+        sentenceListRef.current?.scrollToSentence(currentSentenceIndex);
+        scrolledBookRef.current = bookId;
       }, 100);
       return () => clearTimeout(timer);
     }
-  }, [loading, book, currentChapterIndex, currentSentenceIndex, setHighlight]);
+  }, [loading, book, bookId, currentChapterIndex, currentSentenceIndex, setHighlight]);
 
   // Get current chapter
   const currentChapter = book?.chapters[currentChapterIndex] ?? null;

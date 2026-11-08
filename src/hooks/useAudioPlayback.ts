@@ -74,6 +74,7 @@ export function useAudioPlayback() {
   // Initialize audio service
   useEffect(() => {
     let mounted = true;
+    let initializingService: ReturnType<typeof initializeAudioSyncService> | null = null;
 
     const init = async () => {
       if (serviceRef.current) return;
@@ -96,6 +97,7 @@ export function useAudioPlayback() {
           totalSteps: 2,
           enableLazyVoiceLoading: useLazyLoading
         });
+        initializingService = service;
 
         // Connect sentence state changes to the store
         service.onSentenceStateChange((sentenceId, state) => {
@@ -111,7 +113,6 @@ export function useAudioPlayback() {
         });
 
         if (!mounted) {
-          service.dispose();
           return;
         }
 
@@ -149,10 +150,10 @@ export function useAudioPlayback() {
               // Fix 9: Debounce ASR completion callbacks - defer to idle time
               if ('requestIdleCallback' in window) {
                 requestIdleCallback(() => {
-                  markASRComplete(sentenceId);
+                  if (mounted) markASRComplete(sentenceId);
                 }, { timeout: 1000 });
               } else {
-                setTimeout(() => markASRComplete(sentenceId), 100);
+                setTimeout(() => { if (mounted) markASRComplete(sentenceId); }, 100);
               }
             }
           });
@@ -174,10 +175,13 @@ export function useAudioPlayback() {
     return () => {
       mounted = false;
       endSession();
-      if (serviceRef.current) {
-        serviceRef.current.dispose();
+      initializingService?.dispose();
+      if (serviceRef.current === initializingService) {
         serviceRef.current = null;
       }
+      setTTSReady(false);
+      setTTSLoading(false);
+      setTTSBackend(null);
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 

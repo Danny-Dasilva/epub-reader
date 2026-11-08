@@ -145,6 +145,14 @@ export class StreamingAudioWorklet {
     return this.playbackRate;
   }
 
+  getGeneration(): number {
+    return this.generation;
+  }
+
+  isCurrentGeneration(generation: number): boolean {
+    return this.isInitialized && this.generation === generation;
+  }
+
   connect(destination: AudioNode): void {
     if (!this.gainNode) {
       throw new Error('Worklet not initialized');
@@ -238,7 +246,8 @@ export class StreamingAudioWorklet {
     const estimatedSamples = Math.ceil((estimatedDurationMs / 1000) * sampleRate);
     this.workletNode.port.postMessage({
       type: 'preallocate',
-      estimatedSamples
+      estimatedSamples,
+      generation: this.generation
     });
   }
 
@@ -271,6 +280,7 @@ export class StreamingAudioWorklet {
   }
 
   dispose(): void {
+    this.generation++;
     this.disconnect();
 
     if (this.workletNode) {
